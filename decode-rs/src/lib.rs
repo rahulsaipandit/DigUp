@@ -321,4 +321,42 @@ mod tests {
         assert_eq!(entry(&data, "big.xml", 99_999).unwrap_err(), TOO_BIG);
         assert_eq!(entry(&data, "big.xml", 100_000).unwrap().len(), 100_000);
     }
+
+    // The three fixes from the code review, each pinned by a test.
+
+    /// A read callback that claims to have copied more than it was asked for: believing it would move the position past the buffer.
+    unsafe extern "C" fn over_reporting(_context: *mut c_void, _offset: u64, buffer: *mut u8, length: usize) -> i64 {
+        ptr::write_bytes(buffer, 0, length);
+        length as i64 + 1000
+    }
+
+    #[test]
+    fn a_callback_that_reports_more_than_it_was_asked_for_is_an_error_and_not_believed() {
+        let callback = Callback { read: over_reporting, context: ptr::null_mut(), size: 4096, position: 0 };
+        let error = zip_entry(callback, "x", 1 << 20).unwrap_err();
+        assert!(error == READ_ERROR || error == NOT_A_ZIP, "got {error}");
+        // And directly: the reader refuses it, rather than advancing past what it asked for.
+        let mut callback = Callback { read: over_reporting, context: ptr::null_mut(), size: 4096, position: 0 };
+        let mut buffer = [0u8; 16];
+        assert!(callback.read(&mut buffer).is_err());
+        assert_eq!(callback.position, 0, "the position did not move");
+    }
+
+    #[test]
+    fn a_limit_of_u64_max_does_not_wrap_or_panic() {
+        let data = zip_with("big.xml", &vec![b'A'; 1000]);
+        assert_eq!(entry(&data, "big.xml", u64::MAX).unwrap().len(), 1000);
+    }
+
+    #[test]
+    fn the_output_pointers_are_cleared_when_a_picture_fails() {
+        let garbage = b"this is not a picture";
+        let (mut width, mut height) = (7i32, 7i32);
+        // Start them as if left over from an earlier call: a failure must not leave them looking like something to free.
+        let mut out: *mut u8 = 0x10 as *mut u8;
+        let mut out_len: usize = 99;
+        let code = unsafe { dz_image_decode_rgb(garbage.as_ptr(), garbage.len(), &mut width, &mut height, &mut out, &mut out_len) };
+        assert_eq!(code, UNSUPPORTED);
+        assert!(out.is_null() && out_len == 0);
+    }
 }

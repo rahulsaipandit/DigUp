@@ -235,10 +235,15 @@ stb_image and miniz read for DigUp. They parse files from anywhere, which is wha
 - **Supply chain.** 39 crates are in the lock file (`image`, `zip`, `png`, `zune-jpeg`, `flate2`, `miniz_oxide` and their
   dependencies), where the C readers were two vendored source files. Not audited: `cargo audit` was not run. They are pinned, so
   an update is a deliberate change to `Cargo.lock`.
+- **Reviewed.** The owner's code review found and fixed five issues in this crate and the Swift around it (a read callback that
+  over-reports, an overflow at a limit of `u64::MAX`, output pointers left unset on failure, two handle leaks, and `userenv.dll`
+  loaded from a searched path); see the changelog. The three in the Rust crate have a test each; the handle leaks and the DLL load
+  have none (no test here can make `seekToEnd` or `_open_osfhandle` fail).
 - **A panic does not cross the interface:** each entry point catches it and returns an error code. The crate has a few lines of
   `unsafe` at that boundary (pointers in, a buffer handed out and freed with its length).
-- **Tested:** 5 Rust tests (the crate's own: a PNG without its alpha, garbage and truncated files do not panic, a header that
-  claims a huge picture is refused, a zip entry is read and a missing one reported, an entry over the limit is refused); and in the
+- **Tested:** 8 Rust tests (the crate's own: a PNG without its alpha, garbage and truncated files do not panic, a header that
+  claims a huge picture is refused, a zip entry is read and a missing one reported, an entry over the limit is refused, a callback that over-reports is an error, a limit of `u64::MAX` does not wrap, and the output
+  pointers are cleared on a failed picture); and in the
   Swift tests: which reader handles which format, PNG and BMP pixel-exact against stb, JPEG within the tolerance, a truncated PNG
   refused, and zip entries equal to the bytes that went in.
 
@@ -289,10 +294,23 @@ filling the screen with warnings.
   nothing, and both stayed waiting. **With** `retry 2,3`: the good file was read and became done, and the bad picture failed again
   and is counted once.
 
+- **In the real shell window** (Tauri's WebView2, driven over its debugging port by `scripts/fork-tests/shell-e2e`): the line "2 files
+  couldn't be read" is there, **Review** opens the list with the reasons grouped, **Retry all** closes the panel and says the files are
+  being read again, the line comes back with only the picture that is really bad, and the index afterwards is right. Screenshots of
+  the real page are in `TEST_ROOT\shell-e2e\shots`. This run found a bug in the sandbox (next section).
+
 **Not checked**
 
-- The page was not run in the real shell (Tauri's WebView2 window), only in a browser with a mocked backend.
 - Not on the Mac, and not in the search panel or tray.
+
+### Under the shell: nested jobs
+
+The shell puts every helper in a job (to end them with it), so the worker's job is nested inside it. Windows refuses to nest a job with
+UI restrictions inside one that has them (error 50, "assign to job failed"), and the first version of the sandbox set them in both, so
+it did not start at all under the shell, though every standalone run and test was fine. The worker's job now leaves the UI restrictions
+out when the helper's own job has them (the worker is bound by the parent's). `scripts/fork-tests/job-nesting.bat` is the regression
+test: it runs the helper inside jobs configured like the shell's. It had to be found by running the real shell; a unit test cannot put
+its own process in such a job and take it out again.
 
 ### Not covered
 

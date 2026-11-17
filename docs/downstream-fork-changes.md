@@ -17,6 +17,57 @@ Entry format: date and time (local), category, files, what changed, why, how it 
 - **How it was checked:** `cargo test --locked` in decode-rs (5 passed). The Swift changes were not built or run.
 - **On a sync:** nothing special; these are inside fork-only files.
 
+## 2026-11-17 (PST, night) — Fix: the decode worker's sandbox did not start under the shell (nested jobs)
+
+- **Category:** security (a bug in the fork's own code, found by running the real shell)
+- **Files:** [Sandbox+Windows.swift](../Sources/DigUpKit/Platform/Portable/Sandbox+Windows.swift); new:
+  [job-nesting.py and .bat](../scripts/fork-tests/job-nesting.py); the check added to
+  [shell-e2e/drive.mjs](../scripts/fork-tests/shell-e2e/drive.mjs)
+- **What was wrong:** under the shell, every PDF, picture and document read failed with "PDF reader couldn't start: sandbox: assign to
+  job failed (Windows error 50)". The shell puts each helper in a job object (helper.rs), and since the first entry in this file that
+  job sets UI restrictions (no clipboard, desktop and so on). The worker is started in a job of its own, with the same UI restrictions.
+  **Windows refuses to nest a job with UI restrictions inside one that has them.** Standalone runs, and every test, were fine, because
+  a test runner is not inside such a job. It affected the sandboxed ffmpeg as well, which uses the same launcher.
+- **How it was found:** the first run of the failed-files list in the real shell window. The list itself worked, and showed the
+  failure: after "Retry all" the bad picture's reason was the sandbox error, not its own. The new check in `drive.mjs` is that reason.
+- **Isolated with:** a process placed in jobs of each kind, running the helper under it (`job-nesting.bat`): no parent job: works;
+  kill-on-close only: works; UI restrictions, with or without kill-on-close: **fails**. And with two levels of jobs: parent with UI
+  restrictions and child without: works; parent without and child with: works; **both with: error 50**.
+- **Fix:** the worker's job leaves out the UI restrictions when the helper is already in a job that has them (found with
+  `QueryInformationJobObject` on the process's own job). The worker is bound by the parent's restrictions anyway, and when the helper
+  is not in such a job (the command line, a test runner) the worker's job sets them as before, so nothing is lost either way.
+- **Checked:** `job-nesting.bat` now passes for all four parent-job variants, including the shell's (kill-on-close plus UI
+  restrictions); the real shell window passes all its checks and the index afterwards is right (the retried file done, the bad picture
+  failed for its own reason). The unit tests cannot cover this: putting the test process into a UI-restricted job would restrict the
+  whole run and cannot be undone, so the regression test is the script, run as its own processes.
+- **A correction to an earlier claim:** the first entry in this file (UI restrictions on the helpers' job object) said it compiled and
+  was not run. That was true, and this is what running it inside the shell showed: the restrictions on the shell's job and on the
+  worker's job could not both be applied.
+- **On a sync:** one block in `SandboxedProcess.init`.
+
+## 2026-11-17 (PST, night) — Fixes from the owner's code review of the sandbox and Rust-reader code
+
+- **Category:** security (fixes to the fork's own code)
+- **Files:** [decode-rs/src/lib.rs](../decode-rs/src/lib.rs), [FileReader.swift](../Sources/DigUpKit/Platform/Portable/FileReader.swift),
+  [AppContainer+Windows.swift](../Sources/DigUpKit/Platform/Portable/AppContainer+Windows.swift)
+- **What the review found, and what was changed** (made by the owner; read and kept):
+  - **Memory safety, zip reader** (`lib.rs`): the read callback's reply was trusted. A callback returning more bytes than it was
+    asked for would have moved the reader's position past its buffer. It is now treated as a read error.
+  - **Overflow** (`lib.rs`): `max_bytes + 1` would wrap or panic for a limit of `u64::MAX`; it is now `saturating_add`.
+  - **Output pointers** (`lib.rs`): `dz_image_decode_rgb` left `out` and `out_len` unset on failure; they are now cleared on every
+    failure path, as `dz_zip_entry` already did.
+  - **Handle leaks** (`FileReader.swift`, `init?(passedHandle:)`): the duplicated handle leaked when `seekToEnd` failed, and the
+    passed handle leaked when `_open_osfhandle` failed. Both are closed on those paths.
+  - **DLL planting** (`AppContainer+Windows.swift`): `userenv.dll` was loaded with `LoadLibraryW`, which also looks in the current
+    folder and on PATH. It now uses `LoadLibraryExW` with `LOAD_LIBRARY_SEARCH_SYSTEM32`. The shell already restricts its DLL search
+    (see the first entry), but the `digup` helper does not, so this load needed it. No other `LoadLibrary` call is left in the code.
+- **One more of the same kind, found while reading the fix:** if `DuplicateHandle` itself failed in `init?(passedHandle:)`, the passed
+  handle was not closed. It is now.
+- **Tests added** (in `lib.rs`): a callback that over-reports is an error and does not move the position; a limit of `u64::MAX` does
+  not wrap or panic; `dz_image_decode_rgb` clears `out` and `out_len` on failure.
+- **Checked:** the Rust tests (8, including the three above) pass. The Swift changes were not built or run in this step. The handle
+  leaks (a failing `seekToEnd`, `_open_osfhandle` or `DuplicateHandle`) and the DLL load have no test: nothing here can make those fail.
+
 ## 2026-11-17 (PST, night) — A quiet list of files that could not be read, with Retry (Windows and Linux shell)
 
 - **Category:** visibility / usability
@@ -330,6 +381,9 @@ Entry format: date and time (local), category, files, what changed, why, how it 
 - **Checked:** `cargo check` passes (Windows, MSVC). Not run: no helper was started under the new job, so a GPU or
   driver problem would show only at run time. If the helpers fail on a machine after this change, remove the UI
   restrictions block first.
+- **Later found to conflict** with the decode worker's own job when the helper runs under the shell (Windows refuses a nested job with UI
+  restrictions inside one that has them); the worker's job now leaves them out in that case. See "Fix: the decode worker's sandbox did not
+  start under the shell" above.
 - **On a sync:** if upstream changes `job()`, re-apply the block after the limits are set and before the job is returned.
 
 ---

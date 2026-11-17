@@ -27,7 +27,7 @@ final class FileReader {
         // A copy of our own first: FileHandle takes the original over, and it can't be duplicated after that.
         var own: HANDLE?
         guard DuplicateHandle(GetCurrentProcess(), raw, GetCurrentProcess(), &own, 0, false, DWORD(DUPLICATE_SAME_ACCESS)),
-              let own else { return nil }
+              let own else { CloseHandle(raw); return nil }   // the handle handed over is ours to close when it can't be used
         let descriptor = _open_osfhandle(intptr_t(bitPattern: raw), 0)   // _O_RDONLY
         guard descriptor >= 0 else { CloseHandle(own); CloseHandle(raw); return nil }   // neither is going to be used
         handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)

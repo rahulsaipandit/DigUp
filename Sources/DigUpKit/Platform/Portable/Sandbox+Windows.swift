@@ -130,11 +130,22 @@ final class SandboxedProcess: DecodeChannel, @unchecked Sendable {
                                       DWORD(MemoryLayout.size(ofValue: limits))) else {
             throw SandboxError(step: "job limits", code: GetLastError())
         }
-        var ui = JOBOBJECT_BASIC_UI_RESTRICTIONS(UIRestrictionsClass: DWORD(JOB_OBJECT_UILIMIT_DESKTOP
-            | JOB_OBJECT_UILIMIT_DISPLAYSETTINGS | JOB_OBJECT_UILIMIT_EXITWINDOWS | JOB_OBJECT_UILIMIT_GLOBALATOMS
-            | JOB_OBJECT_UILIMIT_READCLIPBOARD | JOB_OBJECT_UILIMIT_SYSTEMPARAMETERS | JOB_OBJECT_UILIMIT_WRITECLIPBOARD))
-        guard SetInformationJobObject(jobHandle, JobObjectBasicUIRestrictions, &ui, DWORD(MemoryLayout.size(ofValue: ui))) else {
-            throw SandboxError(step: "job UI restrictions", code: GetLastError())
+        // The UI restrictions (no clipboard, desktop, display settings, system parameters, global atoms, exit-windows). Not when this
+        // process is already in a job that has them, as it is under the shell (helper.rs puts every helper in one that does): Windows
+        // refuses to nest a job with UI restrictions inside one that has them too ("assign to job failed", error 50), and the
+        // worker is bound by the parent's anyway. (The first version set them always, and the sandbox did not start under the
+        // shell at all: scripts/fork-tests/job-nesting.bat.)
+        var parentUI = JOBOBJECT_BASIC_UI_RESTRICTIONS()
+        let parentRestrictsUI = QueryInformationJobObject(nil, JobObjectBasicUIRestrictions, &parentUI,
+                                                          DWORD(MemoryLayout.size(ofValue: parentUI)), nil)
+            && parentUI.UIRestrictionsClass != 0
+        if !parentRestrictsUI {
+            var ui = JOBOBJECT_BASIC_UI_RESTRICTIONS(UIRestrictionsClass: DWORD(JOB_OBJECT_UILIMIT_DESKTOP
+                | JOB_OBJECT_UILIMIT_DISPLAYSETTINGS | JOB_OBJECT_UILIMIT_EXITWINDOWS | JOB_OBJECT_UILIMIT_GLOBALATOMS
+                | JOB_OBJECT_UILIMIT_READCLIPBOARD | JOB_OBJECT_UILIMIT_SYSTEMPARAMETERS | JOB_OBJECT_UILIMIT_WRITECLIPBOARD))
+            guard SetInformationJobObject(jobHandle, JobObjectBasicUIRestrictions, &ui, DWORD(MemoryLayout.size(ofValue: ui))) else {
+                throw SandboxError(step: "job UI restrictions", code: GetLastError())
+            }
         }
 
         // The attributes: which handles are inherited, the mitigation policies, and no child processes.
