@@ -183,7 +183,8 @@ impl Shell {
     }
 
     fn index_arguments(&self) -> Vec<String> {
-        self.options.index.iter().flat_map(|index| ["--index".to_string(), index.display().to_string()]).collect()
+        // DOWNSTREAM-FORK: `index_choice` also honors DIGUP_INDEX.
+        self.options.index_choice().iter().flat_map(|index| ["--index".to_string(), index.display().to_string()]).collect()
     }
 
     /// `index-service` for the folders as they are now.
@@ -721,7 +722,8 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
         options.code_roots.iter().map(|root| root.display().to_string()).collect()
     };
     let mut search_args = vec!["search-service".to_string()];
-    search_args.extend(options.index.iter().flat_map(|index| ["--index".to_string(), index.display().to_string()]));
+    // DOWNSTREAM-FORK: `index_choice` also honors DIGUP_INDEX.
+    search_args.extend(options.index_choice().iter().flat_map(|index| ["--index".to_string(), index.display().to_string()]));
     search_args.extend(folder_arguments(&settings, &code_folders));
     search_args.extend(roots);
     let search = SearchService::new(

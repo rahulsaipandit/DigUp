@@ -30,11 +30,11 @@ set "DIGUP_BACKENDS=%REPO%\Vendor\llama\lib"
 
 if defined BUILD (
   swift build --product digup
-  set "RC=%ERRORLEVEL%"
+  if errorlevel 1 (set "FAILED=1") else (set "FAILED=")
   rem swift build deletes the tracked Package.resolved on Windows.
   git restore Package.resolved
-  if not "%RC%"=="0" (popd & exit /b %RC%)
 )
+if defined FAILED (popd & exit /b 1)
 
 if not exist ".build\debug\digup.exe" (
   echo .build\debug\digup.exe not found. Run again with BUILD=1 set.

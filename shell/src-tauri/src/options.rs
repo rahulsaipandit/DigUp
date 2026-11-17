@@ -12,7 +12,11 @@ pub struct Options {
     /// The index folder. None: the helper's own default (%LOCALAPPDATA%\DigUp\index on Windows,
     /// ~/.local/share/digup/index on Linux).
     pub index: Option<PathBuf>,
+    /// DOWNSTREAM-FORK: the index folder from the DIGUP_INDEX environment variable, used when `--index` is not given. Kept apart
+    /// from `index` because that one makes this a dev run (no open-at-login entry); a default from the environment must not.
+    pub index_env: Option<PathBuf>,
     /// Where the model files are (DIGUP_MODELS for the helpers); None: the helper looks where it always does.
+    /// DOWNSTREAM-FORK: `--models`, else the DIGUP_MODELS environment variable.
     pub models: Option<PathBuf>,
     /// The folders to search and keep indexed, instead of the settings' (dev runs; setup is then skipped).
     pub roots: Vec<PathBuf>,
@@ -59,7 +63,8 @@ impl Options {
         let mut options = Options {
             helper: default_helper(),
             index: None,
-            models: None,
+            index_env: env_folder("DIGUP_INDEX"),
+            models: env_folder("DIGUP_MODELS"),
             roots: Vec::new(),
             code_roots: Vec::new(),
             hotkey: None,
@@ -107,18 +112,24 @@ impl Options {
             }
         }
         // On a Mac the shell is only tried out: the helper's default index there is the Mac app's.
-        if cfg!(target_os = "macos") && options.index.is_none() {
-            return Err("pass --index: on a Mac the default index belongs to the DigUp app".into());
+        if cfg!(target_os = "macos") && options.index_choice().is_none() {
+            return Err("pass --index (or set DIGUP_INDEX): on a Mac the default index belongs to the DigUp app".into());
         }
         Ok(options)
     }
 }
 
 impl Options {
-    /// The index folder the helpers use: the one given, else the helper's default (which the watcher must pass over).
+    /// DOWNSTREAM-FORK: the index folder to pass the helpers: `--index`, else DIGUP_INDEX, else None (the helper's default).
+    pub fn index_choice(&self) -> Option<PathBuf> {
+        self.index.clone().or_else(|| self.index_env.clone())
+    }
+
+    /// The index folder the helpers use: the one chosen (`index_choice`), else the helper's default (which the watcher must
+    /// pass over).
     pub fn index_folder(&self) -> Option<PathBuf> {
-        if self.index.is_some() {
-            return self.index.clone();
+        if let Some(chosen) = self.index_choice() {
+            return Some(chosen);
         }
         if cfg!(windows) {
             return std::env::var_os("LOCALAPPDATA").map(|local| PathBuf::from(local).join("DigUp").join("index"));
@@ -127,6 +138,11 @@ impl Options {
             .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")));
         data.map(|data| data.join("digup").join("index"))
     }
+}
+
+/// DOWNSTREAM-FORK: a folder from an environment variable; unset or empty is None.
+fn env_folder(name: &str) -> Option<PathBuf> {
+    std::env::var_os(name).filter(|value| !value.is_empty()).map(PathBuf::from)
 }
 
 /// The helper in the `helper` folder beside this program (Windows: "DigUp.exe" and "digup.exe" can't share a folder),

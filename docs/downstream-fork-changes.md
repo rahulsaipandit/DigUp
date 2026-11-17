@@ -9,6 +9,23 @@ Entry format: date and time (local), category, files, what changed, why, how it 
 
 ---
 
+## 2026-11-17 (PST, night) — Shell reads DIGUP_INDEX and DIGUP_MODELS
+
+- **Category:** feature (storage location)
+- **Files:** `shell/src-tauri/src/options.rs`, `shell/src-tauri/src/main.rs` (both tagged `DOWNSTREAM-FORK`).
+- **What changed:** when `--index` / `--models` are not given, the shell takes the index folder from `DIGUP_INDEX` and the model folder
+  from `DIGUP_MODELS`. The index one is a separate field (`index_env`, read through `Options::index_choice`), not `options.index`,
+  because a set `options.index` makes `dev_run()` true and drops the open-at-login entry. `--index` still wins over the variable.
+- **Why:** the installed app's only way to leave `%LOCALAPPDATA%` (C:) was a command-line argument, so a Start-menu or autostart
+  launch used C:. With the variables set once for the user, every launch uses D:.
+- **Also:** on a Mac the "pass --index" error now accepts `DIGUP_INDEX` too. `--models` and the variable feed the model download
+  (`download-model --to`), the speed check and every helper's `DIGUP_MODELS`, as `--models` did.
+- **Checked:** `cargo check` passes; the installer builds with it (53.9 MB). Not run: the installed app reading the variables, or
+  the open-at-login entry with them set.
+- **On a sync:** keep the `index_choice` calls in `main.rs` (`index_arguments` and the search service's args) and `index_folder`.
+
+---
+
 ## 2026-11-17 (PST, night) — Windows dev runner script
 
 - **Category:** tooling
@@ -25,6 +42,9 @@ Swift and cargo paths, `CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER` set to MSVC'
 
 And `scripts/digup-app.bat` (new, tagged): starts the installed app with `--index` and `--models` on D: (its default is on C:), plus
 any arguments given, such as `--roots`. Not yet run: the installer was not installed.
+
+Also fixed in `scripts/dev-run.bat`: `RC` was read with `%ERRORLEVEL%` inside the `if defined BUILD (...)` block, which expands when the
+block is parsed, so a failed build looked like success. It now checks `if errorlevel 1` right after `swift build`.
 
 ---
 
