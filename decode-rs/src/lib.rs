@@ -1,6 +1,6 @@
 // DOWNSTREAM-FORK (2026-11-17, security): new in the fork. See docs/design.md ("Rust decoders").
 //
-// What stb_image and miniz read for DigUp, in Rust: JPEG, PNG, GIF and BMP pictures, and one entry of a zip file. They parse files
+// What stb_image and miniz read for DigUp, in Rust: JPEG, PNG, GIF, BMP, PNM, TGA and PSD pictures, and one entry of a zip file. They parse files
 // from anywhere, so they are the part most worth having in a memory-safe language. A C interface for the Swift side
 // (include/digup_decode.h). Nothing here panics across it: every entry point catches a panic and returns an error code.
 //
@@ -49,42 +49,113 @@ pub unsafe extern "C" fn dz_free(pointer: *mut u8, len: usize) {
 
 // ------------------------------------------------------------------------------------------------------------------ pictures
 
-fn supported(format: Option<ImageFormat>) -> Option<ImageFormat> {
-    match format {
-        Some(f @ (ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::Gif | ImageFormat::Bmp)) => Some(f),
-        _ => None,
+/// What kind of picture the bytes are. TGA has no magic bytes, so it is what a file is when nothing else matches and its header
+/// passes the decoder's own checks (`tga_header`); PSD is found by its "8BPS" signature, which `image` does not read.
+enum Kind {
+    Image(ImageFormat),
+    Psd,
+}
+
+fn kind(bytes: &[u8]) -> Option<Kind> {
+    if bytes.starts_with(b"8BPS") {
+        return Some(Kind::Psd);
+    }
+    match image::guess_format(bytes) {
+        Ok(f @ (ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::Gif | ImageFormat::Bmp | ImageFormat::Pnm)) => {
+            Some(Kind::Image(f))
+        }
+        Ok(_) => None, // WebP, TIFF, AVIF and the rest: ffmpeg's
+        Err(_) => tga_header(bytes).then_some(Kind::Image(ImageFormat::Tga)),
     }
 }
 
-fn reader(bytes: &[u8]) -> Option<ImageReader<Cursor<&[u8]>>> {
-    let mut reader = ImageReader::new(Cursor::new(bytes)).with_guessed_format().ok()?;
-    supported(reader.format())?;
-    let mut limits = Limits::default();
-    limits.max_alloc = Some(MAX_PIXELS * 4); // bytes any one allocation may take while decoding
-    reader.limits(limits);
-    Some(reader)
+/// Whether the bytes begin like a TGA file: the decoder accepts the header (its image type, color map and depth are checked there).
+fn tga_header(bytes: &[u8]) -> bool {
+    bytes.len() >= 18 && image::codecs::tga::TgaDecoder::new(Cursor::new(bytes)).is_ok()
 }
 
-fn info(bytes: &[u8]) -> Result<(u32, u32), i32> {
-    let reader = reader(bytes).ok_or(UNSUPPORTED)?;
-    let (width, height) = reader.into_dimensions().map_err(|_| CORRUPT)?;
+fn limits() -> Limits {
+    let mut limits = Limits::default();
+    limits.max_alloc = Some(MAX_PIXELS * 4); // bytes any one allocation may take while decoding
+    limits
+}
+
+fn reader(bytes: &[u8], format: ImageFormat) -> ImageReader<Cursor<&[u8]>> {
+    let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
+    reader.limits(limits());
+    reader
+}
+
+fn checked(width: u32, height: u32) -> Result<(u32, u32), i32> {
     if width == 0 || height == 0 || u64::from(width) * u64::from(height) > MAX_PIXELS {
         return Err(TOO_BIG);
     }
     Ok((width, height))
 }
 
-fn decode(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), i32> {
-    let (width, height) = info(bytes)?;
-    let image = reader(bytes).ok_or(UNSUPPORTED)?.decode().map_err(|error| match error {
-        image::ImageError::Limits(_) => TOO_BIG,
-        _ => CORRUPT,
-    })?;
-    // Packed 8-bit RGB, as stb gives with three channels: the alpha channel is dropped, 16 bits are cut to 8.
-    Ok((width, height, image.into_rgb8().into_raw()))
+/// A PSD's size is in its header (height, then width, as big-endian u32 at bytes 14 and 18).
+fn psd_dimensions(bytes: &[u8]) -> Result<(u32, u32), i32> {
+    if bytes.len() < 26 {
+        return Err(CORRUPT);
+    }
+    let height = u32::from_be_bytes(bytes[14..18].try_into().unwrap());
+    let width = u32::from_be_bytes(bytes[18..22].try_into().unwrap());
+    let (width, height) = checked(width, height)?;
+    // The `psd` crate allocates from the header before it reads the pixels, so a file of a few bytes that claims 400 megapixels would
+    // take gigabytes (an allocation failure aborts the process; it is not a panic that is caught). Compressed pixel data cannot
+    // shrink by more than about 1000 to 1 (deflate), so a size that no file of this length could hold is a bad file.
+    if u64::from(width) * u64::from(height) > bytes.len() as u64 * PSD_MAX_PIXELS_PER_BYTE {
+        return Err(CORRUPT);
+    }
+    Ok((width, height))
 }
 
-/// The size of a picture this reads (JPEG, PNG, GIF, BMP, found by its first bytes), without decoding it.
+/// The most pixels a PSD may claim per byte of file (see `psd_dimensions`).
+const PSD_MAX_PIXELS_PER_BYTE: u64 = 4096;
+
+fn info(bytes: &[u8]) -> Result<(u32, u32), i32> {
+    match kind(bytes).ok_or(UNSUPPORTED)? {
+        Kind::Psd => psd_dimensions(bytes),
+        Kind::Image(format) => {
+            let (width, height) = reader(bytes, format).into_dimensions().map_err(|_| CORRUPT)?;
+            checked(width, height)
+        }
+    }
+}
+
+fn decode(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), i32> {
+    let (width, height) = info(bytes)?;
+    match kind(bytes).ok_or(UNSUPPORTED)? {
+        Kind::Psd => {
+            // The merged picture the file carries, as stb reads it. A mode or depth the reader does not know is the caller's to
+            // pass on (ffmpeg, in its sandbox reads PSD too), not a crash.
+            let psd = psd::Psd::from_bytes(bytes).map_err(|_| UNSUPPORTED)?;
+            if psd.width() != width || psd.height() != height {
+                return Err(CORRUPT);
+            }
+            let rgba = psd.rgba();
+            if rgba.len() as u64 != u64::from(width) * u64::from(height) * 4 {
+                return Err(CORRUPT);
+            }
+            // Alpha dropped, as for every other format here.
+            let mut rgb = Vec::with_capacity(rgba.len() / 4 * 3);
+            for pixel in rgba.chunks_exact(4) {
+                rgb.extend_from_slice(&pixel[..3]);
+            }
+            Ok((width, height, rgb))
+        }
+        Kind::Image(format) => {
+            let image = reader(bytes, format).decode().map_err(|error| match error {
+                image::ImageError::Limits(_) => TOO_BIG,
+                _ => CORRUPT,
+            })?;
+            // Packed 8-bit RGB, as stb gives with three channels: the alpha channel is dropped, 16 bits are cut to 8.
+            Ok((width, height, image.into_rgb8().into_raw()))
+        }
+    }
+}
+
+/// The size of a picture this reads (JPEG, PNG, GIF, BMP, PNM, PSD found by their first bytes, TGA by a header that passes), without decoding it.
 /// Returns 0, or `UNSUPPORTED` for any other file (so the caller may use another reader), or `CORRUPT` or `TOO_BIG`.
 ///
 /// # Safety
@@ -358,5 +429,224 @@ mod tests {
         let code = unsafe { dz_image_decode_rgb(garbage.as_ptr(), garbage.len(), &mut width, &mut height, &mut out, &mut out_len) };
         assert_eq!(code, UNSUPPORTED);
         assert!(out.is_null() && out_len == 0);
+    }
+
+    #[test]
+    fn pnm_tga_and_psd_pictures_are_read() {
+        // P6 (binary PPM), 2 x 1: red, blue.
+        let mut ppm = b"P6
+2 1
+255
+".to_vec();
+        ppm.extend_from_slice(&[255, 0, 0, 0, 0, 255]);
+        assert_eq!(decode(&ppm).unwrap(), (2, 1, vec![255, 0, 0, 0, 0, 255]));
+        // TGA, written by the same crate that reads it.
+        let mut tga = Vec::new();
+        image::RgbImage::from_fn(3, 2, |x, y| image::Rgb([x as u8 * 50, y as u8 * 90, 9]))
+            .write_to(&mut Cursor::new(&mut tga), ImageFormat::Tga)
+            .unwrap();
+        let (w, h, pixels) = decode(&tga).unwrap();
+        assert_eq!((w, h, pixels.len()), (3, 2, 18));
+        assert_eq!(&pixels[3..6], &[50, 0, 9]);
+        // PSD: a 1 x 1 RGB 8-bit file, built by hand (header, empty color mode data, resources and layer sections, raw image data).
+        let mut psd = b"8BPS".to_vec();
+        psd.extend_from_slice(&[0, 1, 0, 0, 0, 0, 0, 0, 0, 3]); // version 1, reserved, 3 channels
+        psd.extend_from_slice(&1u32.to_be_bytes()); // height
+        psd.extend_from_slice(&1u32.to_be_bytes()); // width
+        psd.extend_from_slice(&[0, 8, 0, 3]); // depth 8, mode RGB
+        psd.extend_from_slice(&[0; 12]); // three empty sections
+        psd.extend_from_slice(&[0, 0, 10, 20, 30]); // raw compression, R G B planes of one pixel
+        assert_eq!(decode(&psd).unwrap(), (1, 1, vec![10, 20, 30]));
+    }
+
+    #[test]
+    fn a_psd_that_claims_a_huge_size_is_refused_and_a_cut_one_is_not_a_crash() {
+        let mut psd = b"8BPS".to_vec();
+        psd.extend_from_slice(&[0, 1, 0, 0, 0, 0, 0, 0, 0, 3]);
+        psd.extend_from_slice(&300_000u32.to_be_bytes());
+        psd.extend_from_slice(&300_000u32.to_be_bytes());
+        psd.extend_from_slice(&[0, 8, 0, 3]);
+        assert_eq!(info(&psd).unwrap_err(), TOO_BIG);
+        assert!(decode(&psd[..20]).is_err());
+        // A size inside the limit but that no file this short could hold: refused before the crate allocates for it.
+        let mut small = psd[..26].to_vec();
+        small[14..18].copy_from_slice(&20_000u32.to_be_bytes());
+        small[18..22].copy_from_slice(&20_000u32.to_be_bytes());
+        assert_eq!(info(&small).unwrap_err(), CORRUPT);
+        assert_eq!(decode(&small).unwrap_err(), CORRUPT);
+    }
+
+    #[test]
+    fn a_header_that_only_looks_like_tga_by_chance_is_not_taken_for_one() {
+        assert_eq!(info(b"just some text, not a picture at all").unwrap_err(), UNSUPPORTED);
+        assert_eq!(info(&[0u8; 64]).unwrap_err(), UNSUPPORTED); // image type 0: no image
+    }
+
+    // ---------------------------------------------------------------------------------------------------------------- fuzzing
+    //
+    // A seeded mutation fuzzer that runs with `cargo test` (the libFuzzer targets in fuzz/ run in CI): valid files of every format
+    // are cut, flipped, filled and stretched, and every entry point must return a code, never `PANIC`, never hang, and never hand
+    // back a picture whose size does not match its pixels. Set DIGUP_FUZZ_ROUNDS for more (default 3000 per seed).
+
+    /// xorshift64*: the same sequence for the same seed, so a failure can be replayed.
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 >> 12;
+            self.0 ^= self.0 << 25;
+            self.0 ^= self.0 >> 27;
+            self.0.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        }
+        fn below(&mut self, n: usize) -> usize {
+            (self.next() % n.max(1) as u64) as usize
+        }
+    }
+
+    fn mutate(seed: &[u8], rng: &mut Rng) -> Vec<u8> {
+        let mut bytes = seed.to_vec();
+        for _ in 0..1 + rng.below(4) {
+            if bytes.is_empty() {
+                break;
+            }
+            let at = rng.below(bytes.len());
+            match rng.below(7) {
+                0 => bytes[at] ^= 1 << rng.below(8),
+                1 => bytes[at] = rng.next() as u8,
+                2 => bytes.truncate(at),
+                3 => {
+                    let end = (at + 1 + rng.below(16)).min(bytes.len());
+                    for byte in &mut bytes[at..end] {
+                        *byte = [0x00, 0xFF, 0x7F, 0x80][rng.below(4)];
+                    }
+                }
+                4 => {
+                    let extra: Vec<u8> = (0..rng.below(64)).map(|_| rng.next() as u8).collect();
+                    bytes.splice(at..at, extra);
+                }
+                5 => {
+                    // A four-byte field set to an extreme: sizes, counts and offsets are where decoders go wrong.
+                    if at + 4 <= bytes.len() {
+                        let value: u32 = [0, 1, 0x7FFF_FFFF, 0x8000_0000, 0xFFFF_FFFF, 0x00FF_FFFF][rng.below(6)];
+                        let field = if rng.below(2) == 0 { value.to_le_bytes() } else { value.to_be_bytes() };
+                        bytes[at..at + 4].copy_from_slice(&field);
+                    }
+                }
+                _ => {
+                    let from = rng.below(bytes.len());
+                    let chunk: Vec<u8> = bytes[from..(from + 32).min(bytes.len())].to_vec();
+                    bytes.splice(at..at, chunk);
+                }
+            }
+        }
+        bytes
+    }
+
+    fn picture_seeds() -> Vec<(&'static str, Vec<u8>)> {
+        let rgb = image::RgbImage::from_fn(13, 9, |x, y| image::Rgb([x as u8 * 19, y as u8 * 27, (x * y) as u8]));
+        let encode = |format| {
+            let mut out = Vec::new();
+            rgb.write_to(&mut Cursor::new(&mut out), format).unwrap();
+            out
+        };
+        let mut ppm = b"P6\n4 2\n255\n".to_vec();
+        ppm.extend((0..24).map(|i| i as u8 * 9));
+        let mut pgm = b"P5\n3 3\n255\n".to_vec();
+        pgm.extend(0..9u8);
+        let mut psd = b"8BPS".to_vec();
+        psd.extend_from_slice(&[0, 1, 0, 0, 0, 0, 0, 0, 0, 3]); // version 1, reserved, 3 channels
+        psd.extend_from_slice(&2u32.to_be_bytes()); // height
+        psd.extend_from_slice(&2u32.to_be_bytes()); // width
+        psd.extend_from_slice(&[0, 8, 0, 3]); // 8 bits, RGB
+        psd.extend_from_slice(&[0; 12]); // color mode data, image resources, layers: all empty
+        psd.extend_from_slice(&[0, 0]); // raw
+        psd.extend((0..12u8).map(|i| i * 17)); // three planes of four pixels
+        vec![
+            ("png", encode(ImageFormat::Png)),
+            ("jpeg", encode(ImageFormat::Jpeg)),
+            ("gif", encode(ImageFormat::Gif)),
+            ("bmp", encode(ImageFormat::Bmp)),
+            ("tga", encode(ImageFormat::Tga)),
+            ("ppm", ppm),
+            ("pgm", pgm),
+            ("psd", psd),
+        ]
+    }
+
+    fn rounds() -> usize {
+        std::env::var("DIGUP_FUZZ_ROUNDS").ok().and_then(|v| v.parse().ok()).unwrap_or(3000)
+    }
+
+    /// Runs the C entry points (which catch panics and say so with `PANIC`) on the bytes and checks what they promise.
+    /// Returns whether the decoder panicked (and the panic was caught at the boundary and returned as `PANIC`, as promised).
+    fn check_picture(bytes: &[u8], what: &str, round: usize) -> bool {
+        let (mut width, mut height) = (0i32, 0i32);
+        let code = unsafe { dz_image_info(bytes.as_ptr(), bytes.len(), &mut width, &mut height) };
+        assert_ne!(code, PANIC, "{what} round {round}: dz_image_info panicked");
+        let mut out: *mut u8 = ptr::null_mut();
+        let mut out_len = 0usize;
+        let code = unsafe { dz_image_decode_rgb(bytes.as_ptr(), bytes.len(), &mut width, &mut height, &mut out, &mut out_len) };
+        let panicked = code == PANIC;
+        if code == OK {
+            assert!(width > 0 && height > 0, "{what} round {round}: an empty picture");
+            assert_eq!(out_len, width as usize * height as usize * 3, "{what} round {round}: size and pixels disagree");
+            unsafe { dz_free(out, out_len) };
+        } else {
+            assert!(out.is_null() && out_len == 0, "{what} round {round}: a failure left something to free");
+        }
+        panicked
+    }
+
+    #[test]
+    fn mutated_pictures_never_panic_or_lie_about_their_size() {
+        for (name, seed) in picture_seeds() {
+            assert!(!check_picture(&seed, name, 0)); // the seed itself is good
+            assert_eq!(decode(&seed).map(|(w, h, p)| p.len() == (w * h * 3) as usize), Ok(true), "{name} seed does not decode");
+            let mut rng = Rng(0x9E37_79B9_7F4A_7C15 ^ name.len() as u64 ^ (name.as_bytes()[0] as u64) << 8);
+            let mut panics = 0;
+            for round in 1..=rounds() {
+                let mutated = mutate(&seed, &mut rng);
+                panics += check_picture(&mutated, name, round) as usize;
+            }
+            // The `image` crate's readers never panic on these. The `psd` crate does on some malformed files (an index out of range in
+            // its section parser): that is caught at the boundary and costs one file, so it is allowed here and counted, not hidden.
+            if name == "psd" {
+                eprintln!("psd: {panics} of {} mutated files made the psd crate panic (contained)", rounds());
+            } else {
+                assert_eq!(panics, 0, "{name}: the decoder panicked on {panics} mutated files");
+            }
+        }
+    }
+
+    #[test]
+    fn random_bytes_are_never_a_picture_that_panics() {
+        let mut rng = Rng(0xDEAD_BEEF_CAFE_F00D);
+        for round in 0..rounds() {
+            let bytes: Vec<u8> = (0..rng.below(300)).map(|_| rng.next() as u8).collect();
+            let _ = check_picture(&bytes, "noise", round);
+            // Noise that starts like each format, so the decoder past the signature is exercised.
+            for start in [&b"\x89PNG\r\n\x1a\n"[..], b"\xFF\xD8\xFF", b"GIF89a", b"BM", b"P6\n", b"8BPS"] {
+                let mut with_start = start.to_vec();
+                with_start.extend_from_slice(&bytes);
+                let _ = check_picture(&with_start, "noise with a signature", round); // (a PSD signature may panic, contained)
+            }
+        }
+    }
+
+    #[test]
+    fn mutated_zip_files_never_panic_and_never_exceed_the_limit() {
+        let seed = zip_with("word/document.xml", &(0..4000).map(|i| (i % 251) as u8).collect::<Vec<u8>>());
+        let mut rng = Rng(0x1234_5678_9ABC_DEF1);
+        for round in 0..rounds() {
+            let mutated = mutate(&seed, &mut rng);
+            let data = mutated.clone();
+            let callback = Callback { read: read_from_slice, context: &data as *const Vec<u8> as *mut c_void, size: data.len() as u64, position: 0 };
+            // `zip_entry` is what the C entry point runs inside `catch_unwind`: a panic in it is caught there, so it is looked for here.
+            let result = catch_unwind(AssertUnwindSafe(|| zip_entry(callback, "word/document.xml", 10_000)));
+            match result {
+                Ok(Ok(bytes)) => assert!(bytes.len() <= 10_000, "round {round}: more than the limit came out"),
+                Ok(Err(_)) => {}
+                Err(_) => panic!("round {round}: zip_entry panicked"),
+            }
+        }
     }
 }

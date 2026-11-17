@@ -1,0 +1,9 @@
+# DOWNSTREAM-FORK (2026-11-17, security): advisories `cargo audit` reports for the shell that are looked at and left. Each with why. Remove one
+# when the reason stops being true.
+[advisories]
+ignore = [
+  # zip 4.6.1 comes in through tauri-plugin-updater, whose version this repository does not pick. The six advisories are about
+  # ZipArchive::extract, the stream reader and AES entries. The updater unpacks an update only after checking its signature against
+  # the key in tauri.conf.json, so a crafted archive has to be signed first. Remove when the plugin moves to zip 9.
+  "RUSTSEC-2026-0367", "RUSTSEC-2026-0368", "RUSTSEC-2026-0369", "RUSTSEC-2026-0429", "RUSTSEC-2026-0545", "RUSTSEC-2026-0548",
+]

@@ -212,6 +212,22 @@ final class DecodeClient: @unchecked Sendable {
         }
     }
 
+    /// DOWNSTREAM-FORK (2026-11-17, security): the most one picture sent back may be, and all of one reply's together. The worker is
+    /// the less trusted side of the pipe, so what it claims to be sending is not believed past these.
+    static let largestBlob = 256 << 20, largestBlobs = 1 << 30
+
+    /// Exactly `count` raw bytes after a reply's line, or nil when the worker stops first.
+    private func readExact(_ child: Child, _ count: Int) -> Data? {
+        while child.buffer.count < count {
+            let data = child.channel.read()
+            if data.isEmpty { return nil }
+            child.buffer.append(data)
+        }
+        let blob = Data(child.buffer.prefix(count))
+        child.buffer.removeSubrange(child.buffer.startIndex..<child.buffer.startIndex + count)
+        return blob
+    }
+
     /// Sends one request and returns the reply's fields. Throws `ExtractError` for a worker that stopped or timed out, and
     /// for the failure the worker reported.
     func request(_ fields: [String: Any], file: URL? = nil) throws -> [String: Any] {
@@ -246,12 +262,14 @@ final class DecodeClient: @unchecked Sendable {
             throw ExtractError.unreadable(timedOut.isSet ? "PDF reader timed out" : "PDF reader stopped\(Self.how(worker))")
         }
         guard let reply = readLine(worker),
-              let object = try? JSONSerialization.jsonObject(with: reply) as? [String: Any],
-              (object["id"] as? Int) == id else {
+              var object = try? JSONSerialization.jsonObject(with: reply) as? [String: Any],
+              (object["id"] as? Int) == id,
+              let blobs = Self.readBlobs(object["blobs"], from: { self.readExact(worker, $0) }) else {
             let how = Self.how(worker)
             drop()
             throw ExtractError.unreadable(timedOut.isSet ? "PDF reader timed out" : "PDF reader stopped\(how)")
         }
+        if !blobs.isEmpty { object["_blobs"] = blobs }
         guard object["ok"] as? Bool == true else {
             switch object["kind"] as? String {
             case "locked": throw ExtractError.locked
@@ -260,6 +278,20 @@ final class DecodeClient: @unchecked Sendable {
             }
         }
         return object
+    }
+
+    /// The pictures that follow a reply line as raw bytes, whose lengths the line lists (`blobs`); nil when the list is not
+    /// believable or the bytes do not arrive. No `blobs` is an empty list.
+    static func readBlobs(_ lengths: Any?, from read: (Int) -> Data?) -> [Data]? {
+        guard let lengths else { return [] }
+        guard let sizes = lengths as? [Int], sizes.count <= 4096, sizes.allSatisfy({ $0 >= 0 && $0 <= largestBlob }),
+              sizes.reduce(0, +) <= largestBlobs else { return nil }
+        var blobs: [Data] = []
+        for size in sizes {
+            guard let blob = read(size) else { return nil }
+            blobs.append(blob)
+        }
+        return blobs
     }
 
     func pdfCount(_ url: URL) throws -> Int {
@@ -274,7 +306,9 @@ final class DecodeClient: @unchecked Sendable {
             guard let number = item["number"] as? Int, let text = item["text"] as? String else { return nil }
             var imagePath = item["imagePath"] as? String
             // A worker that can't write to the user's folders sends the picture, and it is written here.
-            if let encoded = item["image"] as? String, let bytes = Data(base64Encoded: encoded) {
+            let blobs = reply["_blobs"] as? [Data] ?? []
+            if let index = item["blob"] as? Int, blobs.indices.contains(index) {
+                let bytes = blobs[index]
                 try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
                 let out = folder.appendingPathComponent(UUID().uuidString + ".png")
                 try bytes.write(to: out)
@@ -289,9 +323,7 @@ final class DecodeClient: @unchecked Sendable {
     func pdfRender(_ number: Int, of url: URL, pixels: Int, to out: URL) throws {
         let reply = try request(["op": "pdf.render", "path": url.path, "page": number, "pixels": pixels, "out": out.path],
                                 file: url)
-        if let encoded = reply["image"] as? String, let bytes = Data(base64Encoded: encoded) {
-            try bytes.write(to: out)
-        }
+        if let bytes = (reply["_blobs"] as? [Data])?.first { try bytes.write(to: out) }
     }
 }
 
@@ -309,9 +341,15 @@ public enum DecodeWorker {
     /// The file the request handed over, which PDFium reads through (set while a request runs).
     @TaskLocal static var passed: FileReader?
 
+    /// One reply line, and after it the raw bytes of the pictures in `_blobs` (their lengths are listed in the line as `blobs`).
+    /// DOWNSTREAM-FORK (2026-11-17, security): not base64 inside the line, which cost a third more and a copy at each end.
     private static func emit(_ fields: [String: Any]) {
+        var fields = fields
+        let blobs = fields.removeValue(forKey: "_blobs") as? [Data] ?? []
+        if !blobs.isEmpty { fields["blobs"] = blobs.map(\.count) }
         guard var data = try? JSONSerialization.data(withJSONObject: fields) else { return }
         data.append(0x0A)
+        for blob in blobs { data.append(blob) }
         FileHandle.standardOutput.write(data)
     }
 
@@ -338,13 +376,15 @@ public enum DecodeWorker {
                                                minText: request["minText"] as? Int ?? 0,
                                                renderPixels: request["pixels"] as? Int ?? 1400, to: folder)
                     }
+                    var blobs: [Data] = []
                     let pages: [[String: Any]] = read.pages.map { page in
                         var item: [String: Any] = ["number": page.number, "text": page.text, "ocr": page.ocr,
                                                    "garbled": page.garbled.map { $0 as Any } ?? NSNull(),
                                                    "imagePath": NSNull()]
                         if let path = page.imagePath {
                             if work != nil, let bytes = FileManager.default.contents(atPath: path) {
-                                item["image"] = bytes.base64EncodedString()
+                                item["blob"] = blobs.count
+                                blobs.append(bytes)
                                 try? FileManager.default.removeItem(atPath: path)
                             } else {
                                 item["imagePath"] = path
@@ -353,7 +393,7 @@ public enum DecodeWorker {
                         return item
                     }
                     emit(["id": id, "ok": true, "pages": pages, "total": read.total,
-                          "title": read.title.map { $0 as Any } ?? NSNull()])
+                          "title": read.title.map { $0 as Any } ?? NSNull(), "_blobs": blobs])
                 case "image.prepare":
                     var reply = try withFile(request) { try prepareImage(request, url: url(request)) }
                     reply["id"] = id; reply["ok"] = true
@@ -372,7 +412,7 @@ public enum DecodeWorker {
                     if work != nil {
                         let bytes = FileManager.default.contents(atPath: out.path) ?? Data()
                         try? FileManager.default.removeItem(at: out)
-                        emit(["id": id, "ok": true, "image": bytes.base64EncodedString()])
+                        emit(["id": id, "ok": true, "_blobs": [bytes]])
                     } else {
                         emit(["id": id, "ok": true])
                     }
@@ -401,6 +441,12 @@ public enum DecodeWorker {
                         return readerName(bytes.prefix(got))
                     }
                     emit(["id": id, "ok": true, "reader": name])
+                case "selftest.write" where ProcessInfo.processInfo.environment["DIGUP_DECODE_SELFTEST"] == "1":
+                    emit(["id": id, "ok": true, "wrote": SandboxProbe.writes(toFile: request["path"] as? String ?? "")])
+                case "selftest.process" where ProcessInfo.processInfo.environment["DIGUP_DECODE_SELFTEST"] == "1":
+                    emit(["id": id, "ok": true, "opened": SandboxProbe.opensProcess(request["pid"] as? Int ?? 0)])
+                case "selftest.registry" where ProcessInfo.processInfo.environment["DIGUP_DECODE_SELFTEST"] == "1":
+                    emit(["id": id, "ok": true, "wrote": SandboxProbe.writesRegistry()])
                 case "selftest.spawn" where ProcessInfo.processInfo.environment["DIGUP_DECODE_SELFTEST"] == "1":
                     emit(["id": id, "ok": true, "spawned": SandboxProbe.spawnsAChild()])
                 #endif

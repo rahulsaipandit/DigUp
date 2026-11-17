@@ -220,7 +220,10 @@ import WinSDK
         #expect(try reader(of: jpg) == "rust")
         #expect(try reader(of: png) == "rust")
         #expect(try reader(of: bmp) == "rust")
-        #expect(try reader(of: ppm) == "stb", "a format the Rust reader does not read still goes to stb")
+        #expect(try reader(of: ppm) == "rust", "PNM, TGA and PSD are read by the Rust reader too")
+        let webp = folder.appendingPathComponent("a.webp")
+        try (Data("RIFF".utf8) + Data([0, 0, 0, 0]) + Data("WEBPVP8 ".utf8)).write(to: webp)
+        #expect(try reader(of: webp) == "none", "a format neither Rust reader reads goes to ffmpeg, never to stb")
     }
 
     @Test func theRustReaderGivesTheSamePixelsAsStbForPNGAndBMPAndNearlyForJPEG() throws {
@@ -233,15 +236,15 @@ import WinSDK
         let png = folder.appendingPathComponent("a.png")
         try source.write(to: png, png: true)
         let pngBytes = try Data(contentsOf: png)
-        let rustPNG = try #require(RustDecode.decodeRGB(pngBytes)), stbPNG = try #require(RGBImage.load(pngBytes))
+        let rustPNG = try #require(RustDecode.decodeRGB(pngBytes)), stbPNG = try #require(RGBImage.loadStb(pngBytes))
         #expect(rustPNG.width == stbPNG.width && rustPNG.height == stbPNG.height && rustPNG.pixels == stbPNG.pixels)
         #expect(rustPNG.pixels == pixels, "and what was written")
         // BMP: exactly the same.
-        let rustBMP = try #require(RustDecode.decodeRGB(Self.bmp)), stbBMP = try #require(RGBImage.load(Self.bmp))
+        let rustBMP = try #require(RustDecode.decodeRGB(Self.bmp)), stbBMP = try #require(RGBImage.loadStb(Self.bmp))
         #expect(rustBMP.pixels == stbBMP.pixels && rustBMP.pixels == [255, 0, 0, 255, 255, 255, 0, 0, 255, 0, 255, 0])
         // JPEG: another decoder, so a few levels apart at most on average.
         let jpgBytes = try Data(contentsOf: ImageTests.pictures.appendingPathComponent("pattern-o6.jpg"))
-        let rustJPG = try #require(RustDecode.decodeRGB(jpgBytes)), stbJPG = try #require(RGBImage.load(jpgBytes))
+        let rustJPG = try #require(RustDecode.decodeRGB(jpgBytes)), stbJPG = try #require(RGBImage.loadStb(jpgBytes))
         #expect(rustJPG.width == stbJPG.width && rustJPG.height == stbJPG.height)
         let total = Swift.zip(rustJPG.pixels, stbJPG.pixels).reduce(0) { $0 + abs(Int($1.0) - Int($1.1)) }
         #expect(Double(total) / Double(rustJPG.pixels.count) < 3, "mean difference per channel value")
@@ -365,6 +368,31 @@ import WinSDK
         let control = try SandboxPolicy.$forced.withValue(false) { try selftest("selftest.open", ["path": secret.path]) }
         #expect(control["opened"] as? Bool == true)
         #expect(try selftest("selftest.open", ["path": secret.path])["opened"] as? Bool == false)
+    }
+
+    // The other ways out. Each has its control: the same worker, outside the sandbox, does it, so a refusal is the sandbox's.
+
+    @Test func windowsWorkerCannotWriteAFileOutsideItsOwnFolder() throws {
+        let folder = try folder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let planted = folder.appendingPathComponent("planted.txt").path
+        let control = try SandboxPolicy.$forced.withValue(false) { try selftest("selftest.write", ["path": planted]) }
+        #expect(control["wrote"] as? Bool == true)
+        #expect(try selftest("selftest.write", ["path": planted])["wrote"] as? Bool == false)
+        #expect(!FileManager.default.fileExists(atPath: planted))
+    }
+
+    @Test func windowsWorkerCannotOpenAnotherProcess() throws {
+        let pid = Int(ProcessInfo.processInfo.processIdentifier)   // this test runner: the same user's, as the helper would be
+        let control = try SandboxPolicy.$forced.withValue(false) { try selftest("selftest.process", ["pid": pid]) }
+        #expect(control["opened"] as? Bool == true)
+        #expect(try selftest("selftest.process", ["pid": pid])["opened"] as? Bool == false)
+    }
+
+    @Test func windowsWorkerCannotWriteTheUsersRegistry() throws {
+        let control = try SandboxPolicy.$forced.withValue(false) { try selftest("selftest.registry") }
+        #expect(control["wrote"] as? Bool == true)
+        #expect(try selftest("selftest.registry")["wrote"] as? Bool == false)
     }
 
     /// A listener on this machine's loopback address, on a port the system picks: what a worker would send data to.
@@ -577,5 +605,81 @@ import WinSDK
         // The failure left a trace where a person can find it, not only in the error returned for the file.
         #expect((try? String(contentsOfFile: log, encoding: .utf8))?.contains("PDF reader couldn't start") == true)
     }
+
+    // MARK: fuzzing the worker's protocol
+
+    /// A small seeded generator, so a failing run can be replayed.
+    struct Generator: RandomNumberGenerator {
+        var state: UInt64
+        mutating func next() -> UInt64 {
+            state ^= state >> 12; state ^= state << 25; state ^= state >> 27
+            return state &* 0x2545_F491_4F6C_DD1D
+        }
+    }
+
+    /// Requests with the wrong shape: fields of the wrong type, missing, negative, huge, NaN-like, nested, or with odd text. The worker
+    /// must answer each (with a result or an error) without dying, and still serve a good request afterwards. A worker that dies is
+    /// restarted by the client and says "stopped" in its error, which is what this looks for.
+    @Test func theWorkerAnswersRequestsOfTheWrongShapeWithoutDying() throws {
+        let folder = try folder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let pdf = folder.appendingPathComponent("notes.pdf")
+        try TextPDF.write(["First page.", "Second page."], to: pdf, info: "/Title (T)")
+        let notAFile = folder.appendingPathComponent("nothing.bin").path
+        var rng = Generator(state: 0x5EED_1234_ABCD_EF01)
+        let operations = ["pdf.count", "pdf.pages", "pdf.render", "image.prepare", "doc.text", "quit.not", "", "selftest.job", "pdf"]
+        let odd: [Any] = [-1, 0, Int.max, Int.min, 1 << 40, 3.5, -0.0, 1e300, "", "\u{0}", "../../x", String(repeating: "A", count: 5000),
+                          true, NSNull(), [1, 2, 3], ["a": ["b": [1]]], notAFile, pdf.path]
+        let keys = ["path", "from", "to", "page", "pixels", "maxPixel", "minSide", "minText", "png", "folder", "out", "work", "handle"]
+        let outcomes: [String] = try isolated {
+            var seen: [String] = []
+            for _ in 0..<60 {
+                var fields: [String: Any] = ["op": operations.randomElement(using: &rng)!]
+                for key in keys where Bool.random(using: &rng) { fields[key] = odd.randomElement(using: &rng)! }
+                do { _ = try DecodeClient.shared.request(fields, file: nil) } catch let error as ExtractError {
+                    seen.append("\(error)")
+                }
+            }
+            // And the worker still reads a good file.
+            #expect(try DecodeClient.shared.pdfCount(pdf) == 2)
+            return seen
+        }
+        #expect(outcomes.count > 30, "most of these should have come back as errors from the worker, not been skipped: \(outcomes.count)")
+        let died = outcomes.filter { $0.contains("stopped") || $0.contains("timed out") }
+        #expect(died.isEmpty, "the worker died on: \(died.prefix(3))")
+    }
+
+    // MARK: pictures come back as raw bytes after the reply line, not as base64 in it
+
+    @Test func blobsAreReadByTheLengthsListedAndNotBelievedPastTheCaps() {
+        var source = Data([1, 2, 3, 4, 5, 6])
+        let read: (Int) -> Data? = { count in
+            guard source.count >= count else { return nil }
+            defer { source.removeFirst(count) }
+            return Data(source.prefix(count))
+        }
+        #expect(DecodeClient.readBlobs(nil, from: read) == [])
+        #expect(DecodeClient.readBlobs([2, 0, 3], from: read) == [Data([1, 2]), Data(), Data([3, 4, 5])])
+        #expect(DecodeClient.readBlobs([5], from: read) == nil, "the bytes stop short")
+        #expect(DecodeClient.readBlobs([-1], from: read) == nil)
+        #expect(DecodeClient.readBlobs([DecodeClient.largestBlob + 1], from: read) == nil)
+        #expect(DecodeClient.readBlobs(Array(repeating: DecodeClient.largestBlob, count: 5), from: read) == nil, "all together too many")
+        #expect(DecodeClient.readBlobs(Array(repeating: 0, count: 5000), from: read) == nil)
+        #expect(DecodeClient.readBlobs("many", from: read) == nil)
+    }
+
+    #if os(Windows)
+    @Test func aPictureComesBackFromTheSandboxedWorkerAsRawBytes() throws {
+        let folder = try folder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let png = folder.appendingPathComponent("a.png")
+        try RGBImage(width: 40, height: 30, pixels: [UInt8](repeating: 90, count: 40 * 30 * 3)).write(to: png, png: true)
+        let out = try isolated { try ImageExtractor.prepare(png, maxPixel: 20, minSide: 0, to: folder, png: true) }
+        #expect(out.width == 40 && out.height == 30)
+        let bytes = try Data(contentsOf: URL(fileURLWithPath: out.path))
+        #expect(bytes.prefix(4) == Data([0x89, 0x50, 0x4E, 0x47]), "a PNG, whole")
+        #expect(RGBImage.load(bytes)?.width == 20)
+    }
+    #endif
 }
 #endif

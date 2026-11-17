@@ -52,6 +52,11 @@ Requests (`id` is echoed back):
 into `folder`, which the coordinator made, and are returned by path, as today. Sending pixels through the pipe would add
 megabytes of base64 per page for no gain.
 
+A picture the worker has to send back (it has a folder of its own and cannot write where the helper reads) follows the reply line as
+raw bytes. The line lists the lengths as `blobs` (an array of integers) and each page item that has a picture says which one (`blob`,
+an index); `image.prepare` and `pdf.render` have one. The client reads exactly those bytes, and refuses a list with a negative or
+oversized entry (256 MB each, 1 GB together, 4096 entries) or bytes that do not arrive.
+
 Every reply has `ok`. On failure: `{ok: false, kind: "locked" | "unreadable" | "other", error: "..."}`. The client turns
 `locked` into `ExtractError.locked` and the rest into `ExtractError.unreadable`, so the indexer's existing handling applies.
 

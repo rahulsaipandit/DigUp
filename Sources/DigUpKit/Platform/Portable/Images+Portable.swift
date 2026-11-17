@@ -19,7 +19,7 @@ extension ImageExtractor {
         var image: RGBImage
         let width: Int, height: Int
         var storedWidth: Int32 = 0, storedHeight: Int32 = 0, channels: Int32 = 0
-        if stbi_info(url.path, &storedWidth, &storedHeight, &channels) != 0 {
+        if probeSize(url, &storedWidth, &storedHeight, &channels) {
             (width, height) = (Int(storedWidth), Int(storedHeight))
             guard max(width, height) >= minSide else { throw ExtractError.tooSmall(width, height) }
             guard let decoded = RGBImage.load(url.path) else { throw ExtractError.unreadable("can't decode image") }
@@ -43,6 +43,19 @@ extension ImageExtractor {
         let out = folder.appendingPathComponent(UUID().uuidString + (png ? ".png" : ".jpg"))
         try image.write(to: out, png: png)
         return Prepared(path: out.path, width: width, height: height, taken: exif?.dateTimeOriginal)
+    }
+
+    /// Whether a reader knows the file as a picture, and its stored size. Windows: decode-rs's header check on the file's bytes (the
+    /// Rust readers' formats only); elsewhere stb's.
+    private static func probeSize(_ url: URL, _ width: inout Int32, _ height: inout Int32, _ channels: inout Int32) -> Bool {
+        #if os(Windows)
+        guard let data = try? Data(contentsOf: url, options: .mappedIfSafe), case .size(let w, let h) = RustDecode.imageInfo(data)
+        else { return false }
+        (width, height, channels) = (Int32(clamping: w), Int32(clamping: h), 3)
+        return true
+        #else
+        return stbi_info(url.path, &width, &height, &channels) != 0
+        #endif
     }
 
     /// The whole picture, through ffmpeg as 8-bit RGB (PPM down a pipe), turned the way the file says (irot/imir in
@@ -86,8 +99,19 @@ struct RGBImage {
     var height: Int
     var pixels: [UInt8]
 
-    /// Decoded from a file (nil when stb can't read it).
+    /// Decoded from a file (nil when it can't be read).
     static func load(_ path: String) -> RGBImage? {
+        // DOWNSTREAM-FORK (2026-11-17, security): on Windows the Rust readers, never stb (see `load(_ data:)`).
+        #if os(Windows)
+        guard let data = FileManager.default.contents(atPath: path) else { return nil }
+        return load(data)
+        #else
+        return loadStb(path)
+        #endif
+    }
+
+    /// Decoded by stb from a file (nil when it can't).
+    static func loadStb(_ path: String) -> RGBImage? {
         var width: Int32 = 0, height: Int32 = 0, channels: Int32 = 0
         guard let pixels = stbi_load(path, &width, &height, &channels, 3) else { return nil }
         defer { stbi_image_free(pixels) }
@@ -95,8 +119,18 @@ struct RGBImage {
                         pixels: Array(UnsafeBufferPointer(start: pixels, count: Int(width) * Int(height) * 3)))
     }
 
-    /// Decoded from a file's bytes in memory (nil when stb can't read them).
+    /// Decoded from a file's bytes in memory (nil when they can't be read). DOWNSTREAM-FORK (2026-11-17, security): on Windows
+    /// decode-rs reads JPEG, PNG, GIF, BMP, PNM, TGA and PSD, and a picture it does not read is nil, not stb's to try.
     static func load(_ data: Data) -> RGBImage? {
+        #if os(Windows)
+        return RustDecode.decodeRGB(data)
+        #else
+        return loadStb(data)
+        #endif
+    }
+
+    /// Decoded by stb from a file's bytes in memory (nil when it can't). The reference the Rust readers are tested against.
+    static func loadStb(_ data: Data) -> RGBImage? {
         guard !data.isEmpty, data.count <= Int(Int32.max) else { return nil }
         var width: Int32 = 0, height: Int32 = 0, channels: Int32 = 0
         let pixels = data.withUnsafeBytes { bytes in

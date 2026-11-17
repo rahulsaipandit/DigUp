@@ -1,0 +1,17 @@
+# DOWNSTREAM-FORK (2026-11-17, security): CVEs that scripts/check-advisories.py found against a pinned C library and that someone has
+# looked at. One per line: the id, then why it does not need action. Remove a line when the reason stops being true (the build enables
+# the component, or the pin moves to a version where it matters). Looked at on 2026-11-17 against scripts/build-ffmpeg.sh, whose
+# configure is --disable-everything --disable-network, with a listed set of demuxers, decoders, parsers and encoders.
+
+# FFmpeg 9.0.2
+CVE-2025-25468  # memory leak in libavutil/mem.c in git-master "before commit d5873b": a development-branch bug, not in a release
+CVE-2025-25469  # memory leak in libavutil/iamf.c, same commit: git-master, and no IAMF demuxer or muxer is enabled
+CVE-2026-107675 # SFTP host key check in the libssh protocol: --disable-network, and libssh is not linked
+CVE-2026-107676 # av_dynamic_hdr_plus_to_t35 is called by encoders, and none that calls it is enabled (mjpeg, ppm, rawvideo, pcm only)
+CVE-2026-107677 # DASH demuxer: not enabled
+CVE-2026-107678 # av_encryption_init_info_free stack exhaustion: REACHABLE through the mov demuxer (pssh boxes). A crash costs one file:
+                # ffmpeg runs in the sandbox with a timeout (docs/design.md). Re-check when FFmpeg is updated.
+CVE-2026-107696 # RTSP redirects: --disable-network, and no RTSP demuxer
+
+# SQLite 3.54.0
+CVE-2026-119586 # the sqlite3 command-line shell's .recover command: DigUp links the library (amalgamation), not the shell

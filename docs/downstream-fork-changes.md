@@ -9,6 +9,46 @@ Entry format: date and time (local), category, files, what changed, why, how it 
 
 ---
 
+## 2026-11-17 (PST, late) — Rust readers for PSD, TGA and PNM; raw-byte pictures; escape and fuzz tests; advisory CI; PDFium 8152
+
+- **Category:** security / robustness
+- **Files:** `decode-rs/` (`src/lib.rs`, `Cargo.toml`, `Cargo.lock`, `fuzz/`), `Sources/DigUpKit/Platform/Portable/` (`Images+Portable.swift`,
+  `DecodeIsolation.swift`, `DecodeIsolation+Media.swift`, `Sandbox+Windows.swift`), `Tests/DigUpKitTests/` (`DecodeIsolationTests.swift`,
+  `FileReaderTests.swift`), `scripts/` (`check-advisories.py`, `advisories-acknowledged.txt`, `fetch-vendor.sh`, `vendor-checksums.json`),
+  `.github/workflows/security.yml`, `shell/src-tauri/.cargo/audit.toml`, the docs.
+- **What changed:**
+  1. decode-rs reads PNM and TGA (`image` crate) and PSD (`psd` crate). On Windows `RGBImage.load` is the Rust reader and the worker no longer
+     calls stb to look at or decode a file: what the Rust reader does not read goes to ffmpeg. Scaling and writing stay with stb (pixel
+     arrays only). The pixel-comparison tests use `RGBImage.loadStb` as their reference.
+     Review fix: a PSD whose header claims more pixels than any file of its length could hold (over 4096 per byte) is refused as corrupt before the
+     `psd` crate allocates for it (it allocates from the header, and an allocation failure aborts the worker; it is not a caught panic). Tested.
+  2. Pictures and rendered pages come back from the worker as raw bytes after the reply line (`blobs`), not base64, with caps on the client.
+  3. Three more escape tests (write outside the work folder, open another process, write the user's registry), each with an unsandboxed control.
+  4. Fuzzing: a seeded mutation fuzzer in `cargo test`, a Swift test of wrong-shaped requests, libFuzzer targets and a CI job.
+  5. `FileReaderTests`: the `_open_osfhandle` leak fix is pinned (fails without the fix, checked by removing it).
+  6. `security.yml`: `cargo audit` for both Rust projects, `check-advisories.py` for FFmpeg, dav1d, SQLite and PDFium.
+  7. PDFium `chromium/8086` -> `chromium/8152` (published 2026-11-10, so past a 7-day age rule; 8165 was out a day). 8086 predated the fixes of
+     Chrome 157.0.8103.38. The Windows archive was checked against its pin by `fetch-vendor.sh`; the other three pins are GitHub's published
+     digests and those archives were not downloaded or run.
+- **Checked:** 158 Swift tests plus 7 with the model pass on Windows; 14 decode-rs tests; `check-advisories.py` exits 0. **Not run:** the
+  workflow in CI, the libFuzzer targets, PDFium 8152 on Linux or macOS.
+- **On a sync:** keep `RGBImage.load` on Windows pointing at `RustDecode`, and keep the PDFium pin and its checksums together.
+
+---
+
+## 2026-11-17 (PST, late) — cargo audit: zip 9 in decode-rs, patch updates in the shell
+
+- **Category:** security / dependencies
+- **Files:** `decode-rs/Cargo.toml`, `decode-rs/Cargo.lock`, `shell/src-tauri/Cargo.lock`
+- **What:** `zip` 2 → 9 in decode-rs (six advisories, none reachable since only `ZipArchive::new` and `by_name` are used, but
+  fixed anyway). `cargo update` of rustls, rustls-webpki, webpki-root-certs, tokio and rustix in the shell.
+- **Checked:** decode-rs unit tests (8), `cargo audit` clean for decode-rs, the decode library rebuilt and the full Swift suite
+  (157 tests including the reference-vector test) passing. The shell was not built or run after the lock update.
+- **Left:** `zip` 4.6.1 in the shell comes from `tauri-plugin-updater`.
+- **On a sync:** keep the `zip` version in `decode-rs/Cargo.toml`.
+
+---
+
 ## 2026-11-17 (PST, night) — Code-review fixes to the decoder sandbox and decode-rs
 
 - **Category:** security / robustness
@@ -91,7 +131,7 @@ Entry format: date and time (local), category, files, what changed, why, how it 
 - **Checked with the real model** (files downloaded to `D:\Users\rahul\AppData\Local\DigUp\Models`): a good file marked failed was
   put back to waiting by `retry all`; `index-service` read nothing without the `retry` command (control) and read it with it; a
   genuinely bad picture failed again and was counted once.
-- **Not checked:** the page was not run in the real shell window; the Mac app has no such list.
+- **Later checked in the real shell window** (`scripts/fork-tests/shell-e2e`); see the entries above. **Not checked:** the Mac app has no such list.
 - **On a sync:** small additions in each of those files, each tagged `DOWNSTREAM-FORK`; the page's additions are one block in each of
   the three page files.
 

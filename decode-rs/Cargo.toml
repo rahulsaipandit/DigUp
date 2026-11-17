@@ -12,8 +12,10 @@ crate-type = ["staticlib", "rlib"]
 
 [dependencies]
 # Only the formats read below, and no default features: no threads, no rayon, no extra codecs.
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp"] }
-zip = { version = "2", default-features = false, features = ["deflate"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "pnm", "tga"] }
+# PSD (the merged image the file carries, as stb reads it): pure Rust, no default features.
+psd = { version = "0.3", default-features = false }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 
 [profile.release]
 opt-level = 3

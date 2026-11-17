@@ -140,8 +140,8 @@ Each stage is testable by itself:
 1. **Launch through `CreateProcessW`** with the job object and mitigation policies, no AppContainer yet. The smallest step. It
    also moves the helper off `Process`, which the later stages need. **Done.**
 2. **Add the AppContainer** and the access grants for the worker's own files. The first real boundary. **Done.**
-3. **Add handle passing and image frames.** After this the worker cannot open paths at all. **Done**, except that pictures
-   come back as base64 in the JSON reply and not as binary frames.
+3. **Add handle passing and image frames.** After this the worker cannot open paths at all. **Done.** Pictures come back as raw bytes after
+   the reply line (the line lists their lengths as `blobs`; the client caps each at 256 MB and all at 1 GB), not as base64.
 4. **Escape test.** A hostile worker mode that tries to open an unrelated file, make a network connection and start
    `cmd.exe`. It passes only if all three are denied. Without it there is no evidence the sandbox works. **Done:** the
    worker is tested against opening a file it was not handed (with a control that shows the open works outside the
@@ -219,22 +219,27 @@ stb_image and miniz read for DigUp. They parse files from anywhere, which is wha
   the miniz class, which is not compiled on Windows. A zip entry comes out as the same bytes whatever reads it, so there is nothing
   to compare except that. The declared size is checked against the limit before anything is allocated, and what is read is cut at
   the limit too, since a declared size can lie. This applies everywhere on Windows, in the helper as in the worker.
-- **Pictures** (JPEG, PNG, GIF, BMP, recognized by their first bytes), in the decode worker: decoded by the `image` crate (`zune-jpeg`
-  for JPEG). A picture the Rust reader recognizes and finds bad is **refused, not handed to stb**: a picture built to be rejected
-  there would otherwise reach the C reader. Formats it does not read (PSD, TGA, PNM, which have no magic bytes it can use or are not
-  in the `image` crate) still go to stb, inside the sandboxed worker, as before. The helper's own uses of stb (scaling and writing
-  what ffmpeg produced, and a video's frames) are unchanged.
+- **Pictures** (JPEG, PNG, GIF, BMP, PNM and PSD by their first bytes, TGA by a header the decoder accepts), in the decode worker and
+  wherever else `RGBImage.load` is used on Windows: decoded by the `image` crate (`zune-jpeg` for JPEG) and, for PSD, the `psd` crate
+  (the merged picture the file carries). A picture the Rust reader recognizes and finds bad is **refused**, and what it does not read
+  at all goes to ffmpeg in its sandbox: **stb no longer parses any file on Windows.** What is left of stb there is `stbir` (scaling) and
+  `stb_image_write` (PNG and JPEG writing), which work on pixel arrays the Swift code already holds. The PPM that ffmpeg writes and a
+  video's frame files are read by the Rust reader too. A PSD in a mode the `psd` crate does not read (CMYK, 16 bits) is reported
+  as unreadable, where stb read some of those; the `psd` crate also panics on some malformed files (found by the fuzz test), which is
+  caught at the boundary and costs that one file.
 - **Pixels.** PNG and BMP come out exactly as stb's; GIF is expected to; a JPEG is decoded by another decoder, so its pixels differ by
-  a few levels (the test allows a mean difference of under 3 per value). That moves an embedding slightly. It was not compared against
-  the reference vectors, which cannot be run here (no model files), so existing indexes are not known to be unaffected: re-indexing
-  pictures after this change may give slightly different vectors for JPEGs.
+  a few levels (the test allows a mean difference of under 3 per value). That moves an embedding slightly. The reference-vector test
+  does not measure this: it hands the JPEG to llama.cpp's own decoder, so it never goes through decode-rs. Existing indexes are
+  therefore still not known to be unaffected; to measure it, embed the same JPEGs through both paths and compare cosines.
 - **Memory limits:** a picture of more than 400 million pixels is refused, and the decoder's allocation is capped to match.
 - **Build:** `scripts/build-decode-rs.sh` (cargo, in the MSVC environment) builds it into `Vendor/decode`, with `--locked` so only the
   versions in `decode-rs/Cargo.lock` are used. It names MSVC's `link.exe` itself, because Git's bash has a `link.exe` of its own ahead
   of it. The CI workflow and `package-windows.sh` run it (not run in CI here).
 - **Supply chain.** 39 crates are in the lock file (`image`, `zip`, `png`, `zune-jpeg`, `flate2`, `miniz_oxide` and their
-  dependencies), where the C readers were two vendored source files. Not audited: `cargo audit` was not run. They are pinned, so
-  an update is a deliberate change to `Cargo.lock`.
+  dependencies), where the C readers were two vendored source files. `cargo audit` (2026-11-17, advisory DB of that day) found six
+  advisories on `zip` 2.6.1, all in `extract`, the stream reader or AES, none of which DigUp uses (it only calls `ZipArchive::new`
+  and `by_name`, with only the deflate feature); `zip` is now 9.x anyway and the audit is clean. The crates are pinned, so an update
+  is a deliberate change to `Cargo.lock`.
 - **Reviewed.** The owner's code review found and fixed five issues in this crate and the Swift around it (a read callback that
   over-reports, an overflow at a limit of `u64::MAX`, output pointers left unset on failure, two handle leaks, and `userenv.dll`
   loaded from a searched path); see the changelog. The three in the Rust crate have a test each; the handle leaks and the DLL load
@@ -357,7 +362,35 @@ It is written to `decode-worker.log`, and a warning in the app is not built yet.
 The worker is **on by default on Windows** in the `digup` program (see "Switch" in [decoder-worker.md](decoder-worker.md)); the
 first-run risks below are accepted for now, and will be tested on a separate machine.
 
-Not started: Rust readers off Windows, a Linux sandbox, calling `sandbox-remove` from the installer, and steps 3 to 6.
+**Pending** (what is not done, as of 2026-11-17; the plan's steps are the numbered list under "Steps"):
+
+- **Never run:** the installer's uninstall hook (`sandbox-remove`), and the CI workflow's new decode-rs step. No installer or CI run
+  was made.
+- **First run on another machine:** the sandbox's setup on a Windows account, a machine-wide install, a non-NTFS drive, or with
+  security software, none of which has been tried. Planned as a test on a separate machine.
+- **In the app:** the failed-files list is in the Windows and Linux shell's Settings only; not the Mac app, not the search panel or tray.
+- **Sandbox:** no Linux sandbox (seccomp or Landlock around the same worker). Scaling and writing what ffmpeg produced is still stb's
+  (pixel arrays only, in the helper); it was not moved into ffmpeg, which would change the resampling and so the vectors.
+- **Rust readers (step 3):** Windows only (Linux and macOS still use stb or ImageIO); JPEG vectors through decode-rs are not compared with
+  stb's (the reference-vector test uses llama.cpp's decoder, so it cannot show this).
+- **Shell dependencies:** `cargo audit` on `shell/src-tauri` still reports six `zip` 4.6.1 advisories (pulled in by
+  `tauri-plugin-updater`, which is not ours to bump; updates are signature-checked) and unmaintained/unsound notes in the GTK/zbus
+  stack (Linux only). The rustls, rustls-webpki, webpki-root-certs, tokio and rustix advisories were fixed by `cargo update`.
+- **Step 5 (advisories):** `.github/workflows/security.yml` runs `cargo audit` (decode-rs, shell) and `scripts/check-advisories.py` (FFmpeg,
+  dav1d, SQLite and PDFium against NVD) on changes and weekly. It has not run in CI; each step was run by hand. Every CVE found for
+  the pinned FFmpeg and SQLite is looked at and listed with a reason in `scripts/advisories-acknowledged.txt`; one (FFmpeg
+  CVE-2026-107678, a stack exhaustion through the mov demuxer) is reachable and left because the damage is one file in a sandboxed process.
+  PDFium was pinned at `chromium/8086`, behind three PDF fixes in Chrome 157.0.8103.38; it is now `chromium/8152` (see the changelog).
+- **Step 6 (not done):** signed and separately updatable decoder bundles. Fuzzing: `cargo test` runs a seeded mutation fuzzer over every
+  picture format and the zip reader (420,000 inputs run clean on 2026-11-17; the `psd` panics noted above are the only finding), a Swift
+  test sends the worker requests of the wrong shape, and `decode-rs/fuzz` has libFuzzer targets that CI runs. The libFuzzer targets compile
+  but have not been run. The worker's escape tests now cover a file not handed, a child process, the network, writing a file outside its
+  folder, opening another process and writing the user's registry; each has a control that shows the same worker doing it unsandboxed.
+  Not covered: the clipboard, the desktop and window handles, named pipes and other users' objects.
+- **Smaller:** the `seekToEnd` leak fix in `FileReader` has no test (no handle was found that opens as a descriptor and cannot seek;
+  the `_open_osfhandle` fix is tested by handle counting, and that test fails without the fix); Authenticode signing of the installer; an unexplained, intermittent
+  failure of an existing image test (and of two new ones writing sample files) that looks like security software scanning new
+  files.
 
 ## Development environment
 
@@ -395,8 +428,9 @@ of `D:\Github\llamaCPP`). `scripts/build-ffmpeg.sh` then built ffmpeg 9.0.2 and 
 (`MSYSTEM=MINGW64 bash -lc scripts/build-ffmpeg.sh`) into `Vendor/ffmpeg/bin`. `swift build --product digup` builds, and
 `.build\debug\digup.exe --help` runs with `Vendor\llama\lib` and `Vendor\pdfium\lib` on PATH. `swift test` (with
 `Vendor\llama\lib`, `Vendor\pdfium\lib` and `Vendor\ffmpeg\bin` on PATH) is the baseline: 115 tests in 16 suites pass, and
-`ReferenceVectorTests.vectorsMatchTheReference` is skipped because the embedding model files are not on this machine. That
-test is the check that the llama.cpp build makes the same vectors, so it has not been run here.
+`ReferenceVectorTests.vectorsMatchTheReference` was skipped until the model files were on this machine. It was then run
+(2026-11-17, `DIGUP_MODELS` and `DIGUP_BACKENDS` set, CUDA and CPU) and passed: this llama.cpp build (`b11461`) makes the
+vectors the reference holds, at cosine 0.999 or more. The full suite with the model is 157 tests, all passing.
 
 On Windows `swift build` deletes the tracked `Package.resolved` (it pins Sparkle, which only the macOS manifest uses). Run
 `git restore Package.resolved` after a build so it does not end up in a commit.

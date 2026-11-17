@@ -30,7 +30,7 @@ extension DecodeClient {
         }
         var path = reply["path"] as? String
         // A worker that can't write to the user's folders sends the picture, and it is written here.
-        if let encoded = reply["image"] as? String, let bytes = Data(base64Encoded: encoded) {
+        if let bytes = (reply["_blobs"] as? [Data])?.first {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             let out = folder.appendingPathComponent(UUID().uuidString + (png ? ".png" : ".jpg"))
             try bytes.write(to: out)
@@ -91,6 +91,10 @@ extension DecodeWorker {
             break
         }
         #endif
+        #if os(Windows)
+        // Nothing else: what decode-rs does not read goes to ffmpeg (in its sandbox), never to stb.
+        return nil
+        #else
         var storedWidth: Int32 = 0, storedHeight: Int32 = 0, channels: Int32 = 0
         let known = bytes.withUnsafeBytes {
             stbi_info_from_memory($0.bindMemory(to: UInt8.self).baseAddress, Int32(clamping: $0.count), &storedWidth,
@@ -101,6 +105,7 @@ extension DecodeWorker {
             guard let image = RGBImage.load(bytes) else { throw ExtractError.unreadable("can't decode image") }
             return image
         })
+        #endif
     }
 
     /// Which reader takes a picture's bytes: "rust", "rust (refused)" (it recognizes the format and finds the file bad), "stb", or
@@ -113,11 +118,15 @@ extension DecodeWorker {
         case .notRust: break
         }
         #endif
+        #if os(Windows)
+        return "none"
+        #else
         var width: Int32 = 0, height: Int32 = 0, channels: Int32 = 0
         let known = bytes.withUnsafeBytes {
             stbi_info_from_memory($0.bindMemory(to: UInt8.self).baseAddress, Int32(clamping: $0.count), &width, &height, &channels)
         } != 0
         return known ? "stb" : "none"
+        #endif
     }
 
     /// The worker's half of `ImageExtractor.prepare`: stb's branch, from memory. Replies `route: ffmpeg` for what stb can't
@@ -158,7 +167,7 @@ extension DecodeWorker {
         var reply: [String: Any] = ["width": width, "height": height,
                                     "taken": exif?.dateTimeOriginal.map { $0 as Any } ?? NSNull()]
         if work != nil {
-            reply["image"] = (FileManager.default.contents(atPath: out.path) ?? Data()).base64EncodedString()
+            reply["_blobs"] = [FileManager.default.contents(atPath: out.path) ?? Data()]
             try? FileManager.default.removeItem(at: out)
         } else {
             reply["path"] = out.path

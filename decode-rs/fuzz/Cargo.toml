@@ -1,0 +1,28 @@
+# DOWNSTREAM-FORK (2026-11-17, security): new in the fork. libFuzzer targets for decode-rs (`cargo +nightly fuzz run image`), run for a
+# minute each in CI by .github/workflows/security.yml. Not run on the machine that wrote them (needs nightly Rust and libFuzzer).
+[package]
+name = "digup-decode-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+digup-decode = { path = ".." }
+
+[[bin]]
+name = "image"
+path = "fuzz_targets/image.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "zip"
+path = "fuzz_targets/zip.rs"
+test = false
+doc = false
+
+[workspace]

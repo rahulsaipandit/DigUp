@@ -8,7 +8,7 @@ cd "$(dirname "$0")/.."
 SQLITE_ZIP=2026/sqlite-amalgamation-3540000.zip       # SQLite 3.54.0
 STB_COMMIT=2c980bb59875b0d32144a71867fbdebb2f77cd20   # nothings/stb, 2026-08-02
 MINIZ_VERSION=3.1.2
-PDFIUM_TAG=chromium/8086
+PDFIUM_TAG=chromium/8152   # 156/157 line; 8086 lacked the 157.0.8103.38 fixes (scripts/check-advisories.py). Newer than 7 days.
 # Hashes in vendor-checksums.json are reviewed pins, never fetched alongside the downloads.
 # Update the version and its hashes together when upgrading a dependency.
 

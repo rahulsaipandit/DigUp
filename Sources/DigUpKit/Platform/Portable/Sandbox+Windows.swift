@@ -390,6 +390,34 @@ enum SandboxProbe {
         return writable.fd_count > 0 && failed.fd_count == 0
     }
 
+    /// Tries to create a file at `path`, as a decoder that was exploited might plant or overwrite one.
+    static func writes(toFile path: String) -> Bool {
+        let handle = CreateFileW(path.wide, DWORD(GENERIC_WRITE), 0, nil, DWORD(CREATE_NEW), DWORD(FILE_ATTRIBUTE_NORMAL), nil)
+        guard let handle, handle != INVALID_HANDLE_VALUE else { return false }
+        CloseHandle(handle)
+        DeleteFileW(path.wide)
+        return true
+    }
+
+    /// Tries to open another process (by id) to read its memory, as an exploited decoder might the helper that holds the index.
+    static func opensProcess(_ pid: Int) -> Bool {
+        guard let handle = OpenProcess(DWORD(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION), false, DWORD(pid)) else { return false }
+        CloseHandle(handle)
+        return true
+    }
+
+    /// Tries to write to the user's registry hive (a way to be started again at the next sign-in).
+    static func writesRegistry() -> Bool {
+        let name = "Software\\DigUpSandboxProbe-\(UUID().uuidString)"
+        var key: HKEY?
+        let keyWrite = REGSAM(0x0002_0006)
+        guard RegCreateKeyExW(HKEY_CURRENT_USER, name.wide, 0, nil, 0, keyWrite, nil, &key, nil) == ERROR_SUCCESS
+        else { return false }
+        RegCloseKey(key)
+        RegDeleteKeyW(HKEY_CURRENT_USER, name.wide)
+        return true
+    }
+
     /// Tries to start another program, as an exploited decoder might.
     static func spawnsAChild() -> Bool {
         let process = Process()
