@@ -18,3 +18,15 @@
     RMDir "$LOCALAPPDATA\DigUp"
   ${EndIf}
 !macroend
+
+; DOWNSTREAM-FORK (2026-11-17, security): the worker that reads files for DigUp runs in an AppContainer, which is given read
+; access to the folders DigUp's own files are in. An uninstall takes that access and the container away again, before the
+; files are removed (`digup sandbox-remove`). Not on an update: the access stays, and the helper folder gets it again.
+!macro NSIS_HOOK_PREUNINSTALL
+  ${If} $UpdateMode <> 1
+    ${If} ${FileExists} "$INSTDIR\helper\digup.exe"
+      nsExec::Exec '"$INSTDIR\helper\digup.exe" sandbox-remove'
+      Pop $0
+    ${EndIf}
+  ${EndIf}
+!macroend

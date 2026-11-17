@@ -36,7 +36,11 @@ echo "dav1d $DAV1D_VERSION"
 
 list() { local IFS=,; echo "$*"; }
 demuxers=(mov matroska avi mpegts mpegps flv ogg wav w64 aiff caf mp3 aac flac ac3 eac3 asf amr au wv ape tta dv
-  image2 image2pipe webp_pipe tiff_pipe png_pipe jpeg_pipe bmp_pipe)
+  image2 image2pipe webp_pipe tiff_pipe png_pipe jpeg_pipe bmp_pipe
+  # DOWNSTREAM-FORK (2026-11-17, security): the demuxers that recognize a picture by its content. The `*_pipe` names above match no
+  # component of this ffmpeg (its `-demuxers` lists only image2pipe), and `image2` goes by the file's extension, which a file
+  # handed over as `-i fd:` has none of: WebP and TIFF were not readable that way.
+  image_webp_pipe image_tiff_pipe image_png_pipe image_jpeg_pipe image_bmp_pipe)
 decoders=(h264 hevc mpeg4 msmpeg4v1 msmpeg4v2 msmpeg4v3 mpeg1video mpeg2video mjpeg vp8 vp9 libdav1d theora wmv1 wmv2
   wmv3 vc1 h263 flv prores dvvideo rawvideo png bmp webp tiff
   aac aac_latm mp3 mp3float mp2 mp2float mp1 flac vorbis opus alac ac3 eac3 wmav1 wmav2 wmapro amrnb amrwb wavpack ape
@@ -51,12 +55,14 @@ filters=(buffer buffersink abuffer abuffersink null anull format aformat aresamp
 static=()
 case "$(uname -s)" in MINGW*|MSYS*) static=(--extra-ldflags=-static) ;; esac
 
+# DOWNSTREAM-FORK (2026-11-17, security): the `fd` protocol, so a sandboxed ffmpeg can read the one file it is handed (as its
+# standard input, `-fd 0 -i fd:`) and still seek in it, which `pipe:` cannot (an MP4 with its index at the end). See docs/design.md.
 echo "ffmpeg $FFMPEG_VERSION"
 (cd "$T/ffmpeg-$FFMPEG_VERSION" &&
   PKG_CONFIG_PATH="$T/deps/lib/pkgconfig" ./configure --prefix="$OUT" --pkg-config-flags=--static "${static[@]}" \
     --disable-everything --disable-autodetect --disable-network --disable-doc --disable-debug --disable-ffplay \
     --enable-static --disable-shared --enable-zlib --enable-libdav1d \
-    --enable-protocol=file,pipe \
+    --enable-protocol=file,pipe,fd \
     --enable-demuxer="$(list "${demuxers[@]}")" --enable-decoder="$(list "${decoders[@]}")" \
     --enable-parser="$(list "${parsers[@]}")" --enable-filter="$(list "${filters[@]}")" \
     --enable-encoder=pcm_s16le,mjpeg,ppm,rawvideo --enable-muxer=pcm_s16le,image2,image2pipe,rawvideo,null \

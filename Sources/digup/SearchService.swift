@@ -205,6 +205,31 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
             _ = runningEncoder()
             if !searcher.vectorsLoaded { try searcher.reload() }
             return ["ok": true, "encoder": encoderState, "vectors": searcher.vectorCount]
+        // DOWNSTREAM-FORK (2026-11-17): the files that could not be read, and putting them back to waiting (docs/design.md).
+        case "failures":
+            // How many, always; which, up to `limit` (none by default, so asking is cheap).
+            let limit = request["limit"] as? Int ?? 0
+            var count = 0
+            var files: [[String: Any]] = []
+            for (isCode, part) in [(false, store as IndexStore?), (true, codeStore)] {
+                guard let part else { continue }
+                count += (try? part.failedCount()) ?? 0
+                for file in (try? part.failedFiles(limit: limit - files.count)) ?? [] {
+                    files.append(["id": file.id, "path": file.path, "kind": file.kind.rawValue,
+                                  "detail": file.detail ?? "", "code": isCode])
+                }
+            }
+            return ["count": count, "files": files]
+        case "retry":
+            // `all`, or `files`: [{id, code}]. The files are put back to waiting here; the index helper is told which.
+            let all = request["all"] as? Bool ?? false
+            let named = request["files"] as? [[String: Any]] ?? []
+            func ids(code: Bool) -> Set<Int64> {
+                Set(named.filter { ($0["code"] as? Bool ?? false) == code }.compactMap { ($0["id"] as? Int).map(Int64.init) })
+            }
+            let main = try store.requeueFailed(ids: all ? nil : ids(code: false))
+            let code = try codeStore?.requeueFailed(ids: all ? nil : ids(code: true)) ?? []
+            return ["ids": main, "code_ids": code]
         case "status":
             var reply: [String: Any] = ["encoder": encoderState, "vectors": searcher.vectorsLoaded ? searcher.vectorCount : 0,
                                         "code_vectors": codeSearcher?.vectorsLoaded == true ? codeSearcher!.vectorCount : 0,

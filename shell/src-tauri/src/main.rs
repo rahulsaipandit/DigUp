@@ -259,7 +259,7 @@ fn folder_arguments(settings: &Settings, code_folders: &[String]) -> Vec<String>
 #[tauri::command]
 async fn ask(shell: State<'_, Arc<Shell>>, request: Value) -> Result<Value, String> {
     let op = request.get("op").and_then(Value::as_str).unwrap_or_default();
-    if !["search", "embed_ahead", "text", "render", "prewarm", "status", "summaries"].contains(&op) {
+    if !["search", "embed_ahead", "text", "render", "prewarm", "status", "summaries", "failures"].contains(&op) {
         return Err(format!("not a question the panel asks: {op}"));
     }
     shell.search.ask(request).await
@@ -573,6 +573,22 @@ fn quit_app(app: AppHandle) {
     quit(&app);
 }
 
+/// DOWNSTREAM-FORK (2026-11-17): files that could not be read, read again: all of them, or the ones named (`{id, code}`). The
+/// search helper puts them back to waiting, and the index helper is told to read them now. While indexing is paused or outside its
+/// hours they stay waiting until it may run (`started` says whether it was started). Settings' list of failed files calls this.
+#[tauri::command]
+async fn retry_failed(shell: State<'_, Arc<Shell>>, files: Option<Vec<Value>>) -> Result<Value, String> {
+    let request = match files {
+        Some(files) => json!({"op": "retry", "files": files}),
+        None => json!({"op": "retry", "all": true}),
+    };
+    let reply = shell.search.ask(request).await?;
+    let ids = |key: &str| reply[key].as_array().into_iter().flatten().filter_map(Value::as_i64).collect::<Vec<i64>>();
+    let (main, code) = (ids("ids"), ids("code_ids"));
+    let started = !(main.is_empty() && code.is_empty()) && may_index(&shell) && shell.index.retry(&shell.index_launch(), &main, &code).is_ok();
+    Ok(json!({"requeued": main.len() + code.len(), "started": started}))
+}
+
 #[tauri::command]
 fn pause_indexing(app: AppHandle, paused: bool) {
     set_paused(&app, paused);
@@ -609,6 +625,17 @@ fn show_window_or_setup(app: &AppHandle) {
 }
 
 fn main() {
+    // DOWNSTREAM-FORK (2026-11-16, security): DLLs are looked for only in this program's folder, System32 and folders
+    // added with AddDllDirectory, never in the current folder or on PATH. DigUp's per-user install folder is writable by
+    // the user, and a planted DLL in a folder DigUp was started from, or on PATH, would otherwise load into the shell.
+    // Done first, before anything else loads a DLL. Best effort: an old Windows without the call keeps its search order.
+    #[cfg(windows)]
+    // SAFETY: a plain system call with a constant flag.
+    unsafe {
+        windows_sys::Win32::System::LibraryLoader::SetDefaultDllDirectories(
+            windows_sys::Win32::System::LibraryLoader::LOAD_LIBRARY_SEARCH_DEFAULT_DIRS,
+        );
+    }
     let options = match Options::from_args() {
         Ok(options) => options,
         Err(error) => {
@@ -653,7 +680,7 @@ fn main() {
             app_state, open_window, open_settings, choose_folders, index_now, quit_app, close_window, pause_indexing,
             remove_folder, set_skipped, set_skip_types, set_index_hours, code_setup_info, set_code_folders, choose_code_folders,
             remove_code_folder, turn_off_code, set_code_editor, window_resized, copy_file, drag_out, set_hotkey, hold_hotkey,
-            set_tray_click, check_for_updates, offer_update, set_update_checks, open_licenses
+            set_tray_click, check_for_updates, offer_update, set_update_checks, open_licenses, retry_failed
         ])
         .build(tauri::generate_context!())
         .expect("DigUp couldn't start");

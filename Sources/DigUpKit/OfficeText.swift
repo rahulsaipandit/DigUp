@@ -24,6 +24,14 @@ enum OfficeText {
     }
 
     private static func isCompoundFile(_ url: URL) -> Bool {
+        // DOWNSTREAM-FORK (2026-11-17, security): a worker that was handed an open file reads its first bytes from that, as
+        // it may not open the path (DecodeIsolation+Media.swift).
+        #if !canImport(PDFKit)
+        if let passed = DecodeWorker.passed {
+            var head = [UInt8](repeating: 0, count: 8)
+            return passed.read(at: 0, into: &head, count: 8) == 8 && head == [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]
+        }
+        #endif
         guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
         defer { try? handle.close() }
         return (try? handle.read(upToCount: 8)).map(Array.init) == [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]

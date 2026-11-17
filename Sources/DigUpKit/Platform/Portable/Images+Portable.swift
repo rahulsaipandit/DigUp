@@ -12,6 +12,9 @@ extension ImageExtractor {
     /// side is `maxPixel`. stb reads JPEG, PNG, BMP, GIF, PSD, TGA and PNM here; HEIC, WebP, TIFF and AVIF go through
     /// ffmpeg (`decodeWithFFmpeg`). RAW isn't read yet, and says so.
     static func prepare(_ url: URL, maxPixel: Int, minSide: Int, to folder: URL, png: Bool) throws -> Prepared {
+        // DOWNSTREAM-FORK (2026-11-17, security): stb in the worker process when DIGUP_ISOLATE_DECODERS=1
+        // (DecodeIsolation+Media.swift, docs/decoder-worker.md).
+        if DecodeIsolation.enabled { return try prepareIsolated(url, maxPixel: maxPixel, minSide: minSide, to: folder, png: png) }
         let exif = EXIF.read(url)
         var image: RGBImage
         let width: Int, height: Int

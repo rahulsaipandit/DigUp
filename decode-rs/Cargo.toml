@@ -1,0 +1,23 @@
+# DOWNSTREAM-FORK (2026-11-17, security): this whole crate is new in the fork. See docs/design.md ("Rust decoders").
+[package]
+name = "digup-decode"
+version = "0.1.0"
+edition = "2021"
+description = "Memory-safe readers for what stb and miniz read in DigUp: JPEG, PNG, GIF and BMP pictures, and zip entries"
+publish = false
+
+[lib]
+name = "digup_decode"
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+# Only the formats read below, and no default features: no threads, no rayon, no extra codecs.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+# Not "abort": a panic is caught at the C boundary and returned as an error (see lib.rs).
+panic = "unwind"

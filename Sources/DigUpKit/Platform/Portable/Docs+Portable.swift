@@ -46,6 +46,9 @@ enum Zip {
     }
 }
 
+// DOWNSTREAM-FORK (2026-11-17, security): on Windows the zip class is RustDecode+Windows.swift's, with the same interface; the
+// miniz one below is for the other systems.
+#if !os(Windows)
 /// A zip file's entries, through miniz (reading through `FileReader`, so any file name opens). Platform/Apple has the
 /// same name.
 final class ZipArchive {
@@ -54,7 +57,8 @@ final class ZipArchive {
     private var open = false
 
     init(_ url: URL) throws {
-        reader = try FileReader(url)
+        // DOWNSTREAM-FORK (2026-11-17, security): a worker that was handed an open file reads that, not the path.
+        reader = try DecodeWorker.passed ?? FileReader(url)
         zip.initialize(to: mz_zip_archive())
         zip.pointee.m_pIO_opaque = reader.opaque
         zip.pointee.m_pRead = { opaque, offset, buffer, count in
@@ -91,6 +95,7 @@ final class ZipArchive {
         return Array(UnsafeRawBufferPointer(start: bytes, count: size).bindMemory(to: UInt8.self))
     }
 }
+#endif
 
 /// Rich Text Format, read for its words: control words dropped (paragraphs and lines kept as line breaks), escapes
 /// decoded, destination groups (fonts, colors, styles, info, pictures) skipped. Enough for search.

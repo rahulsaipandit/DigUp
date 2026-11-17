@@ -154,7 +154,98 @@ async function loadSummaries() {
     summaries = summaries || [];
   }
   renderFolders();
+  loadFailures();
 }
+
+// DOWNSTREAM-FORK (2026-11-17): files that could not be read. One quiet line with their count (nothing at all when there are none),
+// and a list to open: each file with why it failed and a Retry, and Retry all. The count is asked with the folder summaries (so at
+// most every two seconds while indexing, and when the tab is shown), the list only while it is open. Nothing interrupts: no
+// notification, no tray alert.
+const failureLimit = 500;
+let failures = { count: 0, files: [] };
+let reviewing = false;
+let retriedNote = "";        // "Reading 3 files again…", for a few seconds after a retry
+let retriedTimer = null;
+let shownSignature = "";    // what the open list shows, so a refresh that changes nothing leaves it (and its scroll) alone
+
+async function loadFailures() {
+  try {
+    failures = await ask({ op: "failures", limit: reviewing ? failureLimit : 0 });
+  } catch {
+    return;   // the page keeps what it shows
+  }
+  if (!failures.count) reviewing = false;
+  renderFailures();
+}
+
+/// Why a file failed, as a person would read it: without the helper's "unreadable: ", with a capital.
+function reasonText(detail) {
+  const text = String(detail || "").replace(/^unreadable:\s*/i, "").trim();
+  return text ? text[0].toUpperCase() + text.slice(1) : "Not read";
+}
+
+function renderFailures() {
+  const count = failures.count || 0;
+  const countText = count ? `${count.toLocaleString()} ${count === 1 ? "file" : "files"} couldn't be read.` : "";
+  // With the list open its title says the count, so the line above is for when it is closed.
+  $("failures-note").hidden = (!count && !retriedNote) || (reviewing && count > 0);
+  $("failures-text").textContent = [retriedNote, countText].filter(Boolean).join(" ");
+  $("failures-retried").hidden = !retriedNote;
+  $("failures-retried").textContent = retriedNote;
+  $("failures-review").hidden = !count;
+  $("failures-panel").hidden = !reviewing || !count;
+  if (!reviewing || !count) { shownSignature = ""; return; }
+  const files = failures.files || [];
+  const signature = `${count}|` + files.map((file) => `${file.id}:${file.detail}`).join("|");
+  if (signature === shownSignature) return;
+  shownSignature = signature;
+  $("failures-title").textContent = `${count.toLocaleString()} ${count === 1 ? "file" : "files"} couldn't be read`;
+  // The reasons first, counted: a worker that can't start fails everything for one reason, and that reads as one line.
+  const reasons = new Map();
+  for (const file of files) reasons.set(reasonText(file.detail), (reasons.get(reasonText(file.detail)) || 0) + 1);
+  const byCount = [...reasons].sort((a, b) => b[1] - a[1]);
+  const lines = byCount.slice(0, 4).map(([reason, n]) => `${n.toLocaleString()} × ${reason}`);
+  if (byCount.length > 4) lines.push(`and ${byCount.length - 4} other ${byCount.length - 4 === 1 ? "reason" : "reasons"}`);
+  // The reasons are counted among the files loaded: say so when the list is only some of them.
+  if (files.length < count) lines.unshift(`Among the first ${files.length.toLocaleString()}:`);
+  $("failures-reasons").replaceChildren(...lines.map((line) => element("div", "", line)));
+  const rows = $("failures-rows");
+  rows.replaceChildren();
+  for (const file of files) {
+    const row = element("div", "row");
+    const text = element("div", "text");
+    text.append(element("div", "name", nameOf(file.path)), element("div", "path", shown(file.path)),
+                element("div", "reason", reasonText(file.detail)));
+    const retry = element("button", "", "Retry");
+    retry.onclick = () => retryFailed([{ id: file.id, code: !!file.code }]);
+    row.append(text, retry);
+    rows.append(row);
+  }
+  $("failures-more").hidden = files.length >= count;
+  $("failures-more").textContent = `Showing the first ${files.length.toLocaleString()}. Retry all retries all ${count.toLocaleString()}.`;
+}
+
+/// Files put back to waiting and read now (or when indexing may run again): `files` is a list of {id, code}, or nothing for all.
+async function retryFailed(files) {
+  try {
+    const result = await invoke("retry_failed", files ? { files } : {});
+    const n = result.requeued || 0;
+    if (n) {
+      const noun = n === 1 ? "file" : "files";
+      retriedNote = result.started ? `Reading ${n.toLocaleString()} ${noun} again…`
+        : `${n.toLocaleString()} ${noun} will be read again when indexing runs.`;
+      clearTimeout(retriedTimer);
+      retriedTimer = setTimeout(() => { retriedNote = ""; renderFailures(); }, 8000);
+    }
+  } catch (error) {
+    fail(error);
+  }
+  await loadFailures();
+}
+
+$("failures-review").onclick = () => { reviewing = true; loadFailures(); };
+$("failures-close").onclick = () => { reviewing = false; renderFailures(); };
+$("failures-retry-all").onclick = () => retryFailed();
 
 function renderFolders() {
   const rows = $("folder-rows");

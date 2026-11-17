@@ -23,6 +23,11 @@ enum FFmpeg {
     /// Throws when the tool is missing or fails.
     static func run(_ tool: String?, _ arguments: [String], read: (Data) throws -> Void) throws {
         guard let tool else { throw ExtractError.unreadable("ffmpeg isn't installed (audio and video need it)") }
+        // DOWNSTREAM-FORK (2026-11-17, security): in the AppContainer on Windows when the worker is in use
+        // (FFmpegSandbox+Windows.swift, docs/design.md). No fallback to running it outside.
+        #if os(Windows)
+        if DecodeIsolation.enabled, SandboxPolicy.enabled { return try runSandboxed(tool, arguments, read: read) }
+        #endif
         let process = Process()
         process.executableURL = URL(fileURLWithPath: tool)
         process.arguments = arguments

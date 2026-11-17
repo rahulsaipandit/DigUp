@@ -13,7 +13,8 @@ enum PDFium {
     /// reads through `FileReader` (any file name opens; a big file is never read whole).
     static func withDocument<T>(_ url: URL, _ body: (FPDF_DOCUMENT) throws -> T) throws -> T {
         _ = ready
-        let reader = try FileReader(url)
+        // DOWNSTREAM-FORK (2026-11-16, security): a worker that was handed an open file reads that, not the path.
+        let reader = try DecodeWorker.passed ?? FileReader(url)
         // PDFium counts in C's unsigned long: 4 GB at most on Windows.
         guard reader.size <= UInt64(CUnsignedLong.max) else { throw ExtractError.unreadable("too big") }
         var access = FPDF_FILEACCESS()
@@ -89,7 +90,14 @@ extension PDFExtractor {
     /// text layer came out in glyph order are rendered.
     static func pages(of url: URL, range: (Int) -> Range<Int>, minText: Int, renderPixels: Int, to folder: URL)
         throws -> (pages: [Page], total: Int, title: String?) {
-        try PDFium.withDocument(url) { document in
+        // DOWNSTREAM-FORK (2026-11-16, security): PDFium in a worker process when DIGUP_ISOLATE_DECODERS=1
+        // (DecodeIsolation.swift, docs/decoder-worker.md). The count comes first because `range` needs it.
+        if DecodeIsolation.enabled {
+            let total = try DecodeClient.shared.pdfCount(url)
+            return try DecodeClient.shared.pdfPages(url, range: range(total).clamped(to: 0..<total), minText: minText,
+                                                    pixels: renderPixels, folder: folder)
+        }
+        return try PDFium.withDocument(url) { document in
             let total = Int(FPDF_GetPageCount(document))
             var pages: [Page] = []
             for index in range(total).clamped(to: 0..<total) {
@@ -119,6 +127,8 @@ extension PDFExtractor {
 extension PDFExtractor {
     /// Page `number` (from 1) as a JPEG for a preview, fitted into a square of `pixels`.
     static func renderPage(_ number: Int, of url: URL, pixels: Int, to out: URL) throws {
+        // DOWNSTREAM-FORK (2026-11-16, security): in the worker process when DIGUP_ISOLATE_DECODERS=1.
+        if DecodeIsolation.enabled { return try DecodeClient.shared.pdfRender(number, of: url, pixels: pixels, to: out) }
         try PDFium.withDocument(url) { document in
             guard let page = FPDF_LoadPage(document, Int32(number - 1)) else {
                 throw ExtractError.unreadable("no page \(number)")
@@ -134,7 +144,9 @@ extension PDFExtractor {
 
 extension Estimator {
     static func pages(of path: String) -> Int {
-        (try? PDFium.withDocument(URL(fileURLWithPath: path)) { Int(FPDF_GetPageCount($0)) }) ?? 1
+        // DOWNSTREAM-FORK (2026-11-16, security): in the worker process when DIGUP_ISOLATE_DECODERS=1.
+        if DecodeIsolation.enabled { return (try? DecodeClient.shared.pdfCount(URL(fileURLWithPath: path))) ?? 1 }
+        return (try? PDFium.withDocument(URL(fileURLWithPath: path)) { Int(FPDF_GetPageCount($0)) }) ?? 1
     }
 }
 #endif

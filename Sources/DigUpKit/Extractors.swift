@@ -52,6 +52,13 @@ enum DocExtractor {
     /// (`OfficeText`).
     static func text(of url: URL) throws -> String {
         let ext = url.pathExtension.lowercased()
+        // DOWNSTREAM-FORK (2026-11-17, security): the zip-based files (miniz) in the worker process when
+        // DIGUP_ISOLATE_DECODERS=1 (DecodeIsolation+Media.swift, docs/decoder-worker.md).
+        #if !canImport(PDFKit)
+        if DecodeIsolation.enabled, ["docx", "odt", "xlsx", "pptx", "ods", "odp"].contains(ext) {
+            return try DecodeClient.shared.docText(url)
+        }
+        #endif
         switch ext {
         case "docx", "doc", "odt", "rtf": return try richText(of: url, type: ext)
         case "xlsx", "pptx", "ods", "odp": return try OfficeText.text(of: url, type: ext)

@@ -411,6 +411,8 @@ func status(_ args: Arguments) throws {
     if let fingerprint = try store.meta("fingerprint") { print("built with: \(fingerprint)") }
     print("this digup: llama.cpp \(LlamaEmbedder.buildTag), vectors \(LlamaEmbedder.vectorVersion)")
     print("size: \(ByteCountFormatter.string(fromByteCount: IndexStore.size(of: store.file), countStyle: .file))")
+    // DOWNSTREAM-FORK (2026-11-17, security): where a file reader that could not start is recorded.
+    if let line = DecodeWorker.logLine { print(line) }
 }
 
 /// The app's indexing helper: sync + index on request, JSON events out (IndexService.swift).
@@ -696,7 +698,8 @@ do {
         exit(0)
     }
     let args = try Arguments(raw.dropFirst())
-    if ["index-service", "worker", "search-service", "download-model"].contains(command)
+    // DOWNSTREAM-FORK (2026-11-16, security): decode-worker is a helper mode too (docs/decoder-worker.md).
+    if ["index-service", "worker", "search-service", "download-model", "decode-worker"].contains(command)
         || command == "estimate" && args.flags.contains("--json") {
         ParentWatch.start()   // an app's helper goes when the app does
     }
@@ -728,6 +731,10 @@ do {
         exit(status)
         #endif
     case "worker": exit(workerService(args))
+    // DOWNSTREAM-FORK (2026-11-16, security): PDFium in its own process (DecodeIsolation.swift).
+    case "decode-worker": exit(DecodeWorker.run())
+    // DOWNSTREAM-FORK (2026-11-17, security): takes the worker's sandbox away again (AppContainer+Windows.swift).
+    case "sandbox-remove": exit(SandboxCleanup.run(extraFolders: args.positional))
     case "search-service": exit(try searchService(args))
     case "download-model": exit(try downloadModel(args))
     default:

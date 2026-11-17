@@ -285,6 +285,23 @@ impl IndexService {
         self.run(launch)
     }
 
+    /// DOWNSTREAM-FORK (2026-11-17): files that could not be read, put back to waiting by the search helper, are read now: the index
+    /// helper starts (or syncs) and is told which, so they are read whether or not backfilling is allowed (`retry 1,2,3` for the main
+    /// index, `retry code 4,5` for the code index).
+    pub fn retry(&self, launch: &Launch, main: &[i64], code: &[i64]) -> Result<(), String> {
+        self.run(launch)?;
+        let mut running = self.running.lock().unwrap();
+        let indexing = running.as_mut().ok_or("indexing isn't running")?;
+        let list = |ids: &[i64]| ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
+        if !main.is_empty() {
+            writeln!(indexing.stdin, "retry {}", list(main)).map_err(|e| e.to_string())?;
+        }
+        if !code.is_empty() {
+            writeln!(indexing.stdin, "retry code {}", list(code)).map_err(|e| e.to_string())?;
+        }
+        indexing.stdin.flush().map_err(|e| e.to_string())
+    }
+
     pub fn stop(&self) {
         if let Some(indexing) = self.running.lock().unwrap().take() {
             stop(indexing.child, indexing.stdin, "stop");
@@ -361,6 +378,10 @@ mod job {
         AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation,
         QueryInformationJobObject, SetInformationJobObject, TerminateJobObject, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        // DOWNSTREAM-FORK (2026-11-16, security): the UI restrictions below. See docs/downstream-fork-changes.md.
+        JobObjectBasicUIRestrictions, JOBOBJECT_BASIC_UI_RESTRICTIONS, JOB_OBJECT_UILIMIT_DESKTOP,
+        JOB_OBJECT_UILIMIT_DISPLAYSETTINGS, JOB_OBJECT_UILIMIT_EXITWINDOWS, JOB_OBJECT_UILIMIT_GLOBALATOMS,
+        JOB_OBJECT_UILIMIT_READCLIPBOARD, JOB_OBJECT_UILIMIT_SYSTEMPARAMETERS, JOB_OBJECT_UILIMIT_WRITECLIPBOARD,
     };
 
     struct Job(HANDLE);
@@ -379,6 +400,23 @@ mod job {
             limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
             let set = SetInformationJobObject(handle, JobObjectExtendedLimitInformation,
                                               &limits as *const _ as *const _, std::mem::size_of_val(&limits) as u32);
+            // DOWNSTREAM-FORK (2026-11-16, security): the helpers and their decoders are headless, so the job keeps them
+            // off the clipboard, the desktop, the display settings, system parameters and global atoms. Best effort: if
+            // the system refuses, the job still ends the helpers with the shell. USER handles (JOB_OBJECT_UILIMIT_HANDLES)
+            // are left alone on purpose: GPU drivers can need them, and this change can't be tested against every driver.
+            if set != 0 {
+                let ui = JOBOBJECT_BASIC_UI_RESTRICTIONS {
+                    UIRestrictionsClass: JOB_OBJECT_UILIMIT_DESKTOP
+                        | JOB_OBJECT_UILIMIT_DISPLAYSETTINGS
+                        | JOB_OBJECT_UILIMIT_EXITWINDOWS
+                        | JOB_OBJECT_UILIMIT_GLOBALATOMS
+                        | JOB_OBJECT_UILIMIT_READCLIPBOARD
+                        | JOB_OBJECT_UILIMIT_SYSTEMPARAMETERS
+                        | JOB_OBJECT_UILIMIT_WRITECLIPBOARD,
+                };
+                SetInformationJobObject(handle, JobObjectBasicUIRestrictions, &ui as *const _ as *const _,
+                                        std::mem::size_of_val(&ui) as u32);
+            }
             (set != 0).then_some(Job(handle))
         })
         .as_ref()

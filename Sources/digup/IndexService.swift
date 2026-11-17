@@ -11,7 +11,8 @@ import WinSDK
 /// screenshots, and stayed there), and all of it goes back to the system when this process exits.
 ///
 /// Protocol: one command per line on stdin, one JSON event per line on stdout.
-///   stdin:  sync | sync code | stop | backfill on | backfill off      (EOF = stop)
+///   stdin:  sync | sync code | stop | backfill on | backfill off | retry 1,2 | retry code 3,4      (EOF = stop)
+///           (`retry`, DOWNSTREAM-FORK: files put back to waiting, read now whether or not backfilling is allowed)
 ///   stdout: {"event": "missing" | "pruned" | "scanning" | "sync" | "file" | "rest" | "summary" | "waiting" | "idle" | "error" |
 ///            "exit", ...}; events about the code index say "code": true
 ///
@@ -57,6 +58,9 @@ final class IndexService: @unchecked Sendable {
     private var codeSyncRequested = true
     private var stopRequested = false
     private var backfillAllowed: Bool
+    // DOWNSTREAM-FORK (2026-11-17): files the app asked to be read again (put back to waiting by the search helper), read at once
+    // whether or not backfilling is allowed.
+    private var retryIds = Set<Int64>(), retryCodeIds = Set<Int64>()
     /// A sync asked for while files are being indexed waits until then. A crawl of a big folder can take minutes, and
     /// a folder that keeps changing asks for the next one meanwhile: yielding at once, every pass went back to crawling
     /// before a single file was read. Indexing gets at least as long as the sync before it (2 s at the least).
@@ -117,6 +121,13 @@ final class IndexService: @unchecked Sendable {
                 }
             }
             if lock.withLock({ stopRequested }) { break }
+            // DOWNSTREAM-FORK (2026-11-17): the files the app asked to read again join the new ones.
+            let (again, againCode) = lock.withLock { () -> (Set<Int64>, Set<Int64>) in
+                defer { retryIds = []; retryCodeIds = [] }
+                return (retryIds, retryCodeIds)
+            }
+            newFiles.formUnion(again)
+            newCode.formUnion(againCode)
             guard modelReady() else {
                 // Nothing to embed with yet; the app starts another helper once the download is done.
                 emitCounts("waiting", ["for": "model"])
@@ -309,6 +320,7 @@ final class IndexService: @unchecked Sendable {
             }
             if stop { return false }
             if sync || codeSync && code != nil { return true }
+            if lock.withLock({ !retryIds.isEmpty || !retryCodeIds.isEmpty }) { return true }   // DOWNSTREAM-FORK (2026-11-17)
             if backfill, parts.contains(where: { (try? $0.store.pendingCount()) ?? 0 > 0 })
                 || (try? main.store.unfinishedCount().files) ?? 0 > 0 {
                 return true
@@ -326,6 +338,13 @@ final class IndexService: @unchecked Sendable {
                 case "stop": stopRequested = true
                 case "backfill on": backfillAllowed = true
                 case "backfill off": backfillAllowed = false
+                // `retry 1,2,3` (main index) and `retry code 4,5` (code index).
+                case let line where line.hasPrefix("retry "):
+                    var words = line.dropFirst("retry ".count)
+                    let isCode = words.hasPrefix("code ")
+                    if isCode { words = words.dropFirst("code ".count) }
+                    let ids = Set(words.split(separator: ",").compactMap { Int64($0.trimmingCharacters(in: .whitespaces)) })
+                    if isCode { retryCodeIds.formUnion(ids) } else { retryIds.formUnion(ids) }
                 default: break
                 }
             }

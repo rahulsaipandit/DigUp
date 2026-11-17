@@ -84,6 +84,26 @@
         <button id="pause" hidden>Pause</button>
       </div>
 
+      <!-- DOWNSTREAM-FORK (2026-11-17): files that could not be read. One quiet line with their count (nothing when there are none),
+           and a list to review on request, with each file's reason and a Retry. -->
+      <div class="failures-note" id="failures-note" hidden>
+        <span id="failures-text"></span>
+        <button class="link inline" id="failures-review">Review…</button>
+      </div>
+      <div class="card failures" id="failures-panel" hidden>
+        <div class="failures-head">
+          <div class="failures-title" id="failures-title"></div>
+          <div class="failures-actions">
+            <button id="failures-retry-all">Retry all</button>
+            <button id="failures-close">Close</button>
+          </div>
+        </div>
+        <div class="failures-retried" id="failures-retried" hidden></div>
+        <div class="failures-reasons" id="failures-reasons"></div>
+        <div class="list" id="failures-rows"></div>
+        <div class="failures-more" id="failures-more" hidden></div>
+      </div>
+
       <h3>Folders to search</h3>
       <div class="card list" id="folder-rows"></div>
       <button class="link" id="add-folders">Add Folders…</button>

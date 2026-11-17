@@ -77,3 +77,16 @@ select.field {
 .path-button:hover { color: var(--text); text-decoration: underline; }
 .privacy-text { font-size: 12px; color: var(--secondary); line-height: 1.5; margin: 0; }
 .problem { color: #c4441c; }
+
+/* DOWNSTREAM-FORK (2026-11-17): files that could not be read: a quiet line with a count, and a list to open. */
+.failures-note { margin-top: 10px; font-size: 12px; color: var(--secondary); display: flex; align-items: baseline; gap: 6px; }
+.failures-note .link { color: var(--ember); }
+.failures { margin-top: 8px; }
+.failures-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; }
+.failures-title { font-size: 13px; font-weight: 600; }
+.failures-actions { display: flex; gap: 8px; flex: none; }
+.failures-retried { padding: 0 12px 6px; font-size: 12px; color: var(--moss); font-weight: 500; }
+.failures-reasons { padding: 0 12px 8px; font-size: 11px; color: var(--secondary); line-height: 1.5; }
+.failures .list { max-height: 260px; overflow-y: auto; border-top: 1px solid var(--line); }
+.failures .row .reason { font-size: 11px; color: var(--secondary); white-space: normal; overflow-wrap: anywhere; }
+.failures-more { padding: 8px 12px; font-size: 11px; color: var(--secondary); border-top: 1px solid var(--line); }

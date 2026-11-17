@@ -210,6 +210,8 @@ jobs:
           export PATH="$(dirname "$(command -v cl)"):$PATH"
           scripts/fetch-vendor.sh
           scripts/build-llama.sh
+          # DOWNSTREAM-FORK (2026-11-17, security): the Rust readers that replace stb and miniz on Windows (decode-rs).
+          scripts/build-decode-rs.sh
           scripts/package-windows.sh
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}

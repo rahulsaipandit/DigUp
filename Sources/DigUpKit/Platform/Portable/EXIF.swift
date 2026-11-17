@@ -213,7 +213,9 @@ private final class FileBytes {
     private var blocks: [Int: [UInt8]] = [:]
 
     init?(_ url: URL) {
-        guard let handle = try? FileHandle(forReadingFrom: url), let end = try? handle.seekToEnd(),
+        // DOWNSTREAM-FORK (2026-11-17, security): a worker that was handed an open file reads a copy of that handle.
+        guard let handle = DecodeWorker.passed?.duplicateHandle() ?? (try? FileHandle(forReadingFrom: url)),
+              let end = try? handle.seekToEnd(),
               end <= UInt64(Int.max) else { return nil }
         self.handle = handle
         size = Int(end)

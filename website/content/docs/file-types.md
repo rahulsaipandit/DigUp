@@ -33,7 +33,7 @@ Audio and video of any length are read whole. A PDF over 50 pages gets its first
 - Pictures smaller than 256 pixels and recordings shorter than 2 seconds are skipped.
 - Text that's mostly numbers, like a data export, is found by its exact text only: it has no meaning for the model to place.
 - Copy-protected songs (.m4p, from Apple Music or the old iTunes Store) are skipped, since only the Music app can play them.
-- A file that can't be read, or whose reading runs away, is skipped, and the rest go on.
+- A file that can't be read, or whose reading runs away, is skipped, and the rest go on. On Windows and Linux, Settings → Folders then says how many couldn't be read, and lets you see why and try them again.
 
 ## Not read
 

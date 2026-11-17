@@ -2,12 +2,14 @@
 # Builds DigUp's Windows installer: the Tauri shell (shell/) with DigUp's helper, llama.cpp, PDFium, the Swift and C++
 # runtimes and ffmpeg in its helper folder, as an NSIS installer that installs for the current user (no admin prompt).
 # Run it in Git for Windows' bash inside a Visual Studio developer environment, after scripts/fetch-vendor.sh,
-# scripts/build-llama.sh and scripts/build-ffmpeg.sh (that one in MSYS2's MINGW64 shell). Needs Swift, Rust, Python and
+# scripts/build-llama.sh, scripts/build-decode-rs.sh and scripts/build-ffmpeg.sh (that one in MSYS2's MINGW64 shell). Needs Swift, Rust, Python and
 # Node (for Tauri's CLI):
 #   scripts/package-windows.sh      → shell/src-tauri/target/release/bundle/nsis/
 set -euo pipefail
 cd "$(dirname "$0")/.."
 [[ -x Vendor/ffmpeg/bin/ffmpeg.exe ]] || { echo "no Vendor/ffmpeg/bin/ffmpeg.exe: run scripts/build-ffmpeg.sh in MSYS2" >&2; exit 1; }
+# DOWNSTREAM-FORK (2026-11-17, security): the Rust readers that replace stb and miniz (scripts/build-decode-rs.sh): the build below links them.
+[[ -f Vendor/decode/lib/digup_decode.lib ]] || { echo "no Vendor/decode/lib/digup_decode.lib: run scripts/build-decode-rs.sh" >&2; exit 1; }
 TAURI_CLI=2.12.2
 
 swift build -c release --product digup

@@ -1,0 +1,11 @@
+// DOWNSTREAM-FORK (2026-11-17, security): decode-rs, what stb and miniz read for DigUp, in Rust (Windows). scripts/build-decode-rs.sh
+// builds it into Vendor/decode. The libraries after it are what a Rust static library needs from Windows.
+module CDecode [system] {
+    header "../../decode-rs/include/digup_decode.h"
+    link "digup_decode"
+    link "ntdll"
+    link "userenv"
+    link "ws2_32"
+    link "dbghelp"
+    export *
+}

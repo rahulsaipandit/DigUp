@@ -7,6 +7,18 @@ import PackageDescription
 // Vendor/), and the app, which is macOS only.
 let vendor = "\(Context.packageDirectory)/Vendor"
 
+// DOWNSTREAM-FORK (2026-11-17, security): decode-rs (Rust) reads what stb and miniz read, on Windows for now: scripts/build-decode-rs.sh
+// builds it into Vendor/decode. Elsewhere nothing changes.
+#if os(Windows)
+let decodeTargets: [Target] = [.systemLibrary(name: "CDecode", path: "Sources/CDecode")]
+let decodeDependencies: [Target.Dependency] = ["CDecode"]
+let decodeLink: [LinkerSetting] = [.unsafeFlags(["-L\(vendor)/decode/lib"])]
+#else
+let decodeTargets: [Target] = []
+let decodeDependencies: [Target.Dependency] = []
+let decodeLink: [LinkerSetting] = []
+#endif
+
 #if os(macOS)
 let llamaModule = "Sources/CLlama"                        // static llama.cpp with Metal (scripts/build-llama.sh)
 let llamaLink: [LinkerSetting] = [.unsafeFlags(["-L\(vendor)/llama/lib"])]
@@ -81,10 +93,10 @@ let package = Package(
         .library(name: "DigUpKit", targets: ["DigUpKit"]),
     ] + appProducts,
     dependencies: appDependencies,
-    targets: portableTargets + [
+    targets: portableTargets + decodeTargets + [
         // The engine: crawler, extractors, index store, the embedder interface and worker client, search. No UI.
         // Platform/ holds what differs by OS (Apple's frameworks on macOS, the C libraries above elsewhere).
-        .target(name: "DigUpKit", dependencies: engineDependencies, linkerSettings: engineLink),
+        .target(name: "DigUpKit", dependencies: engineDependencies + decodeDependencies, linkerSettings: engineLink + decodeLink),
         // llama.cpp (scripts/build-llama.sh builds it into Vendor/llama) and EmbeddingGemma 2 on it.
         .systemLibrary(name: "CLlama", path: llamaModule),
         .target(name: "LlamaRuntime", dependencies: ["CLlama", "DigUpKit"], linkerSettings: llamaLink),

@@ -338,6 +338,39 @@ public final class IndexStore {
         return out
     }
 
+    // DOWNSTREAM-FORK (2026-11-17): the files that could not be read, for the app's list of them (docs/design.md, "Files that
+    // could not be read"): how many, which, and putting them back to waiting.
+
+    public func failedCount() throws -> Int {
+        var count = 0
+        try db.query("SELECT COUNT(*) FROM files WHERE state = 'failed'\(scopeSQL)", scopeValues) { count = Int($0.int(0)) }
+        return count
+    }
+
+    /// The failed files, by path, at most `limit` of them.
+    public func failedFiles(limit: Int) throws -> [FileRecord] {
+        var out: [FileRecord] = []
+        guard limit > 0 else { return out }
+        try db.query("SELECT \(Self.fileColumns) FROM files WHERE state = 'failed'\(scopeSQL) ORDER BY path LIMIT ?",
+                     scopeValues + [.int(Int64(limit))]) { out.append(Self.record($0)) }
+        return out
+    }
+
+    /// Puts failed files back to waiting (all of them, or the ones named), with the reason cleared, and says which it put back.
+    /// Only files that are failed: a file that has become something else since the list was shown is left as it is.
+    @discardableResult
+    public func requeueFailed(ids: Set<Int64>?) throws -> [Int64] {
+        if let ids, ids.isEmpty { return [] }
+        let filter = ids.map { " AND id IN (\($0.map(String.init).joined(separator: ",")))" } ?? ""
+        var found: [Int64] = []
+        try db.query("SELECT id FROM files WHERE state = 'failed'\(filter)\(scopeSQL)", scopeValues) { found.append($0.int(0)) }
+        for start in stride(from: 0, to: found.count, by: 5000) {   // SQL text of a bounded length
+            let batch = found[start..<min(start + 5000, found.count)].map(String.init).joined(separator: ",")
+            try db.run("UPDATE files SET state = 'pending', detail = NULL WHERE state = 'failed' AND id IN (\(batch))", [])
+        }
+        return found
+    }
+
     public func pendingCount() throws -> Int {
         var count = 0
         try db.query("SELECT COUNT(*) FROM files WHERE state = 'pending'\(scopeSQL)", scopeValues) {
