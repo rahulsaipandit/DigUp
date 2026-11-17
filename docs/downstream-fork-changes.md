@@ -9,6 +9,25 @@ Entry format: date and time (local), category, files, what changed, why, how it 
 
 ---
 
+## 2026-11-17 (PST, night) — Windows dev runner script
+
+- **Category:** tooling
+- **Files:** `scripts/dev-run.bat` (new; tagged `DOWNSTREAM-FORK` in its first line), this file.
+- **What changed:** a batch file that sets PATH (Swift, MSVC, Vendor DLLs), `DIGUP_MODELS` and `DIGUP_BACKENDS`, optionally builds
+  (`set BUILD=1`), restores `Package.resolved`, and runs `.build\debug\digup.exe --index D:\Temp\digup-dev-index %*`.
+- **Why:** the upstream `scripts/dev-run.sh` is macOS only; the Windows steps were only prose in design.md.
+- **Checked:** `scripts\dev-run.bat --help` prints the CLI help. The BUILD=1 path was not run.
+- **On a sync:** nothing to merge; the file does not exist upstream.
+
+Also `scripts/build-installer.bat` (new, tagged): runs `scripts/package-windows.sh` in Git Bash inside the MSVC environment, with the
+Swift and cargo paths, `CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER` set to MSVC's `link.exe` (Git's own `link` comes first on PATH),
+`Vendor/llama.cpp/LICENSE` copied from `D:\Github\llamaCPP-digup` if missing, and `Package.resolved` restored afterwards. Same sync note.
+
+And `scripts/digup-app.bat` (new, tagged): starts the installed app with `--index` and `--models` on D: (its default is on C:), plus
+any arguments given, such as `--roots`. Not yet run: the installer was not installed.
+
+---
+
 ## 2026-11-17 (PST, late) — JPEG vectors measured; first installer build and uninstall; more escape tests; grant list pruned
 
 - **Category:** security / verification
