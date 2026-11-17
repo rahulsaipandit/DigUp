@@ -1,0 +1,90 @@
+# DOWNSTREAM-FORK (2026-11-17, security): new in the fork. Actions are pinned to commits (the tag is in the comment) and the cargo tools to
+# versions, so a release of one cannot change what this job does. The nightly toolchain is the one thing that floats (cargo-fuzz needs it).
+# Advisories and fuzzing, on changes to what they cover and every week (a new
+# advisory appears without a change here). Not run yet: written on a machine where the workflow cannot run. What each step does was run
+# by hand there, except the fuzz job (it needs nightly Rust and libFuzzer, so it has only run in CI, if at all).
+name: Security
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'decode-rs/**'
+      - 'shell/src-tauri/Cargo.*'
+      - 'shell/src-tauri/.cargo/audit.toml'
+      - 'scripts/vendor-checksums.json'
+      - 'scripts/fetch-vendor.sh'
+      - 'scripts/build-ffmpeg.sh'
+      - 'scripts/check-advisories.py'
+      - 'scripts/advisories-acknowledged.txt'
+      - '.github/workflows/security.yml'
+  pull_request:
+    paths:
+      - 'decode-rs/**'
+      - 'shell/src-tauri/Cargo.*'
+      - 'shell/src-tauri/.cargo/audit.toml'
+      - 'scripts/vendor-checksums.json'
+      - 'scripts/fetch-vendor.sh'
+      - 'scripts/build-ffmpeg.sh'
+      - 'scripts/check-advisories.py'
+      - 'scripts/advisories-acknowledged.txt'
+      - '.github/workflows/security.yml'
+  schedule:
+    - cron: '17 5 * * 1'   # Mondays
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rust-advisories:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked --version 0.23.0
+      # decode-rs reads files from anywhere: a vulnerability in any of its packages fails the job.
+      - name: cargo audit (decode-rs)
+        run: cargo audit --file decode-rs/Cargo.lock
+      # The shell: vulnerabilities fail the job, except those in shell/src-tauri/.cargo/audit.toml, each with its reason.
+      - name: cargo audit (shell)
+        run: cd shell/src-tauri && cargo audit
+
+  c-library-advisories:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # FFmpeg, dav1d, SQLite and PDFium at the versions this repository pins, against the National Vulnerability Database.
+      - name: Check the pinned C libraries
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}   # optional: without it NVD allows 5 requests in 30 seconds, and the script waits
+        run: python3 -I scripts/check-advisories.py
+
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # What the fuzzers found interesting stays from run to run, so the minutes add up instead of starting again each time.
+      - name: Fuzz corpus
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: decode-rs/fuzz/corpus
+          key: fuzz-corpus-${{ github.run_id }}
+          restore-keys: fuzz-corpus-
+      - name: Nightly Rust and cargo-fuzz
+        run: |
+          rustup toolchain install nightly --profile minimal
+          cargo install cargo-fuzz --locked --version 0.13.2
+      - name: The mutation tests that run with cargo test, with more rounds
+        run: cd decode-rs && DIGUP_FUZZ_ROUNDS=100000 cargo test --release
+      - name: Fuzz the picture readers (two minutes)
+        run: cd decode-rs && cargo +nightly fuzz run image -- -max_total_time=120 -rss_limit_mb=2048
+      - name: Fuzz the zip reader (one minute)
+        run: cd decode-rs && cargo +nightly fuzz run zip -- -max_total_time=60 -rss_limit_mb=1024
+      - name: Keep what a failure found
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: fuzz-crashes
+          path: decode-rs/fuzz/artifacts

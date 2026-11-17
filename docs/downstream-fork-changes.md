@@ -9,6 +9,29 @@ Entry format: date and time (local), category, files, what changed, why, how it 
 
 ---
 
+## 2026-11-17 (PST, late) — JPEG vectors measured; first installer build and uninstall; more escape tests; grant list pruned
+
+- **Category:** security / verification
+- **Files:** `Tests/LlamaRuntimeTests/JPEGDecoderVectorTests.swift` (new), `Sources/DigUpKit/Platform/Portable/AppContainer+Windows.swift`,
+  `Sandbox+Windows.swift`, `DecodeIsolation.swift`, `Tests/DigUpKitTests/DecodeIsolationTests.swift`, the docs.
+- **What changed:**
+  1. A test (needs the model) embeds each JPEG prepared with stb's decoder and with decode-rs's: mean cosine 0.9995, worst 0.9987 over
+     39 pictures. `vectorVersion` was not bumped (a full re-embed for a change that small); the test holds the floor at 0.998 and the
+     mean at 0.999.
+  2. The installer was built and run for the first time, and its uninstall hook (`digup sandbox-remove`) did its job (see design.md).
+  3. Escape tests for a named pipe and another process's shared memory. A clipboard test was tried and dropped: the worker can call
+     `OpenClipboard`, and reading it is blocked by the job's UI limits, which another test asserts.
+  4. `AppContainer.record` still appends one line (two processes cannot lose each other's), and once the list passes 64 lines it also drops
+     the lines of folders that are gone. The grant list grew by a line for every scratch folder (about a hundred from a few test runs)
+     and never shrank. A folder counts as gone only if its drive answers, so one on an unplugged drive or an offline share stays listed.
+  5. Review fixes: the JPEG test fails on a picture stb reads and the Rust decoder does not (it skipped them); the Security workflow's
+     actions are pinned to commits and its cargo tools to versions, it keeps a fuzz corpus between runs, and it also runs on changes to
+     `audit.toml` and `vendor-checksums.json`; the shared-memory escape test says it checks the AppContainer's private namespace.
+- **Checked:** 162 Swift tests pass; eight consecutive runs of the suite passed (the intermittent failure did not recur).
+- **On a sync:** none of this is in upstream's way except the `record` function.
+
+---
+
 ## 2026-11-17 (PST, late) — Rust readers for PSD, TGA and PNM; raw-byte pictures; escape and fuzz tests; advisory CI; PDFium 8152
 
 - **Category:** security / robustness

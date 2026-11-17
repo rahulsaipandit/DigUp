@@ -418,6 +418,21 @@ enum SandboxProbe {
         return true
     }
 
+    /// Tries to connect to a named pipe (another program's way of taking requests: a service, a password manager, the helper's own).
+    static func connects(toPipe name: String) -> Bool {
+        let handle = CreateFileW(name.wide, DWORD(GENERIC_READ) | DWORD(GENERIC_WRITE), 0, nil, DWORD(OPEN_EXISTING), 0, nil)
+        guard let handle, handle != INVALID_HANDLE_VALUE else { return false }
+        CloseHandle(handle)
+        return true
+    }
+
+    /// Tries to open a named shared-memory object that another process made (a Global or Local name in the session's namespace).
+    static func opensSharedMemory(named name: String) -> Bool {
+        guard let handle = OpenFileMappingW(DWORD(FILE_MAP_READ), false, name.wide) else { return false }
+        CloseHandle(handle)
+        return true
+    }
+
     /// Tries to start another program, as an exploited decoder might.
     static func spawnsAChild() -> Bool {
         let process = Process()

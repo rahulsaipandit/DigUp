@@ -227,6 +227,12 @@ stb_image and miniz read for DigUp. They parse files from anywhere, which is wha
   video's frame files are read by the Rust reader too. A PSD in a mode the `psd` crate does not read (CMYK, 16 bits) is reported
   as unreadable, where stb read some of those; the `psd` crate also panics on some malformed files (found by the fuzz test), which is
   caught at the boundary and costs that one file.
+- **JPEG vectors (measured 2026-11-17).** `JPEGDecoderVectorTests` prepares each JPEG as the indexer does, once with stb's decoder and once
+  with the Rust one, and embeds both. On 39 pictures (Windows' own wallpapers and the test pictures) the cosine between the two vectors is
+  0.9995 on average and 0.9987 at worst, with the prepared pictures 0.05 to 0.6 levels apart per value on average. The same picture twice
+  gives 1.0000, so this is the decoder and not the model. That is under the 0.999 asked of runtimes for 8 of the 39, and it is a change
+  too small to alter what a search returns, so `vectorVersion` stays and an existing index keeps its stb-made vectors beside new
+  Rust-made ones. `DIGUP_JPEG_CORPUS` (folders, `;`) measures other pictures.
 - **Pixels.** PNG and BMP come out exactly as stb's; GIF is expected to; a JPEG is decoded by another decoder, so its pixels differ by
   a few levels (the test allows a mean difference of under 3 per value). That moves an embedding slightly. The reference-vector test
   does not measure this: it hands the JPEG to llama.cpp's own decoder, so it never goes through decode-rs. Existing indexes are
@@ -364,15 +370,22 @@ first-run risks below are accepted for now, and will be tested on a separate mac
 
 **Pending** (what is not done, as of 2026-11-17; the plan's steps are the numbered list under "Steps"):
 
-- **Never run:** the installer's uninstall hook (`sandbox-remove`), and the CI workflow's new decode-rs step. No installer or CI run
-  was made.
+- **Installer (2026-11-17):** built for the first time (`scripts/package-windows.sh`, `DigUp_0.7.0-beta.3_x64-setup.exe`, 54 MB), installed
+  silently to D: (`/S /D=...`), used to index a PNG, a JPEG and a PDF (the sandbox set up from the installed helper folder), and uninstalled
+  silently: the install folder, `sandbox-grants.txt` and the `DigUp.DecodeWorker` profile were gone afterwards and the models were not
+  touched, so the uninstall hook works. Not tried: the installer's own interface, an update over an older install, the
+  "delete the application data" box. To build it here the shell's cargo needs `CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER` set to MSVC's
+  `link.exe` (Git's bash has one of its own first on PATH), and `scripts/notices.py` wants `Vendor/llama.cpp/LICENSE`, which a build with
+  `LLAMA_SOURCE` set does not make (copy the LICENSE from that clone). **Never run:** the CI workflows' new steps (decode-rs, security).
 - **First run on another machine:** the sandbox's setup on a Windows account, a machine-wide install, a non-NTFS drive, or with
   security software, none of which has been tried. Planned as a test on a separate machine.
 - **In the app:** the failed-files list is in the Windows and Linux shell's Settings only; not the Mac app, not the search panel or tray.
 - **Sandbox:** no Linux sandbox (seccomp or Landlock around the same worker). Scaling and writing what ffmpeg produced is still stb's
   (pixel arrays only, in the helper); it was not moved into ffmpeg, which would change the resampling and so the vectors.
-- **Rust readers (step 3):** Windows only (Linux and macOS still use stb or ImageIO); JPEG vectors through decode-rs are not compared with
-  stb's (the reference-vector test uses llama.cpp's decoder, so it cannot show this).
+- **Rust readers (step 3):** Windows only (Linux and macOS still use stb or ImageIO); JPEG vectors: measured on 2026-11-17 (see
+  "JPEG vectors" under "Rust decoders"): the Rust decoder moves them by a cosine of 0.9987 at worst and 0.9995 on average, below the
+  0.999 the reference test asks of runtimes for 8 of 39 pictures. `vectorVersion` was not bumped; old and new vectors of one photo are
+  that close.
 - **Shell dependencies:** `cargo audit` on `shell/src-tauri` still reports six `zip` 4.6.1 advisories (pulled in by
   `tauri-plugin-updater`, which is not ours to bump; updates are signature-checked) and unmaintained/unsound notes in the GTK/zbus
   stack (Linux only). The rustls, rustls-webpki, webpki-root-certs, tokio and rustix advisories were fixed by `cargo update`.
@@ -385,12 +398,15 @@ first-run risks below are accepted for now, and will be tested on a separate mac
   picture format and the zip reader (420,000 inputs run clean on 2026-11-17; the `psd` panics noted above are the only finding), a Swift
   test sends the worker requests of the wrong shape, and `decode-rs/fuzz` has libFuzzer targets that CI runs. The libFuzzer targets compile
   but have not been run. The worker's escape tests now cover a file not handed, a child process, the network, writing a file outside its
-  folder, opening another process and writing the user's registry; each has a control that shows the same worker doing it unsandboxed.
-  Not covered: the clipboard, the desktop and window handles, named pipes and other users' objects.
+  folder, opening another process, writing the user's registry, connecting to a named pipe and opening another process's shared memory;
+  each has a control that shows the same worker doing it unsandboxed. The clipboard is covered by the job's UI limits (asserted), not
+  tried: `OpenClipboard` succeeds in the worker, and trying to read it would need text on the user's real clipboard. Not covered:
+  window and desktop handles, and objects of other users.
 - **Smaller:** the `seekToEnd` leak fix in `FileReader` has no test (no handle was found that opens as a descriptor and cannot seek;
-  the `_open_osfhandle` fix is tested by handle counting, and that test fails without the fix); Authenticode signing of the installer; an unexplained, intermittent
-  failure of an existing image test (and of two new ones writing sample files) that looks like security software scanning new
-  files.
+  the `_open_osfhandle` fix is tested by handle counting, and that test fails without the fix); Authenticode signing of the installer (needs a certificate). The
+  intermittent failure of an existing image test (and of two new ones writing sample files) was not reproduced: eight runs of the
+  suite in a row on 2026-11-17 all passed, so the guess that security software scanning new files caused it is neither confirmed nor
+  ruled out.
 
 ## Development environment
 

@@ -395,6 +395,32 @@ import WinSDK
         #expect(try selftest("selftest.registry")["wrote"] as? Bool == false)
     }
 
+    // The clipboard is not tested by trying it (that would put text on the user's real clipboard, and an empty one proves nothing).
+    // The job's UI limits for reading and writing it are asserted in windowsWorkerRunsInAJobWithLimits. `OpenClipboard` itself still
+    // succeeds in the worker; it is reading and writing the contents that the limits stop.
+
+    @Test func windowsWorkerCannotConnectToANamedPipe() throws {
+        let name = "\\\\.\\pipe\\DigUp-Test-\(UUID().uuidString)"
+        let pipe = CreateNamedPipeW(name.wide, DWORD(PIPE_ACCESS_DUPLEX), DWORD(PIPE_TYPE_BYTE), 4, 4096, 4096, 0, nil)
+        try #require(pipe != nil && pipe != INVALID_HANDLE_VALUE, "the test's own pipe")
+        defer { CloseHandle(pipe) }
+        let control = try SandboxPolicy.$forced.withValue(false) { try selftest("selftest.pipe", ["name": name]) }
+        #expect(control["connected"] as? Bool == true)
+        #expect(try selftest("selftest.pipe", ["name": name])["connected"] as? Bool == false)
+    }
+
+    // An AppContainer process looks names up in a private object namespace of its own, so it cannot see another process's shared memory
+    // by name whatever the object's access list says. That isolation is what this asserts (it is the sandbox's), not an ACL check.
+    @Test func windowsWorkerCannotOpenAnotherProcessesSharedMemory() throws {
+        let name = "DigUp-Test-Memory-\(UUID().uuidString)"
+        let mapping = CreateFileMappingW(INVALID_HANDLE_VALUE, nil, DWORD(PAGE_READWRITE), 0, 4096, name.wide)
+        try #require(mapping != nil, "the test's own shared memory")
+        defer { CloseHandle(mapping) }
+        let control = try SandboxPolicy.$forced.withValue(false) { try selftest("selftest.sharedmemory", ["name": name]) }
+        #expect(control["opened"] as? Bool == true)
+        #expect(try selftest("selftest.sharedmemory", ["name": name])["opened"] as? Bool == false)
+    }
+
     /// A listener on this machine's loopback address, on a port the system picks: what a worker would send data to.
     final class Listener {
         let port: Int
@@ -450,6 +476,37 @@ import WinSDK
         #expect(AppContainer.hasGrant(folder.path, for: sid))
         try AppContainer.revoke(folder.path, from: sid)
         #expect(!AppContainer.hasGrant(folder.path, for: sid))
+    }
+
+    @Test func theGrantListIsAppendedToAndSweptOfFoldersThatAreGoneOnlyWhenLong() throws {
+        let folder = try folder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let list = folder.appendingPathComponent("grants.txt").path
+        func make(_ name: String) throws -> String {
+            let url = folder.appendingPathComponent(name)
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+            return url.path
+        }
+        let kept = try make("kept"), scratch = try make("scratch")
+        AppContainer.record(kept, in: list)
+        AppContainer.record(scratch, in: list)
+        AppContainer.record(kept, in: list)   // again: no duplicate
+        #expect(AppContainer.manifestFolders(list) == [kept, scratch])
+        try FileManager.default.removeItem(atPath: scratch)   // used and deleted
+        let next = try make("next")
+        AppContainer.record(next, in: list)
+        #expect(AppContainer.manifestFolders(list) == [kept, scratch, next], "a short list is only appended to")
+        let last = try make("last")
+        AppContainer.record(last, in: list, sweepAbove: 3)
+        #expect(AppContainer.manifestFolders(list) == [kept, next, last], "past the limit, the deleted folder's line goes")
+    }
+
+    @Test func aFolderOnADriveThatDoesNotAnswerStaysOnTheList() {
+        // Gone only when its drive is there and it is not. No drive Q: or share here: the folder may come back with the drive.
+        #expect(!AppContainer.isGone("Q:\\Photos\\2026"))
+        #expect(!AppContainer.isGone("\\\\no-such-server-\(UUID().uuidString)\\share\\folder"))
+        #expect(!AppContainer.isGone("relative\\path"))
+        #expect(AppContainer.isGone(FileManager.default.temporaryDirectory.appendingPathComponent("DigUp-gone-\(UUID().uuidString)").path))
     }
 
     @Test func removingTheSandboxTakesTheGrantsAndTheProfileAway() throws {

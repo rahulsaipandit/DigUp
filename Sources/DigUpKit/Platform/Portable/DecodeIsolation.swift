@@ -447,6 +447,10 @@ public enum DecodeWorker {
                     emit(["id": id, "ok": true, "opened": SandboxProbe.opensProcess(request["pid"] as? Int ?? 0)])
                 case "selftest.registry" where ProcessInfo.processInfo.environment["DIGUP_DECODE_SELFTEST"] == "1":
                     emit(["id": id, "ok": true, "wrote": SandboxProbe.writesRegistry()])
+                case "selftest.pipe" where ProcessInfo.processInfo.environment["DIGUP_DECODE_SELFTEST"] == "1":
+                    emit(["id": id, "ok": true, "connected": SandboxProbe.connects(toPipe: request["name"] as? String ?? "")])
+                case "selftest.sharedmemory" where ProcessInfo.processInfo.environment["DIGUP_DECODE_SELFTEST"] == "1":
+                    emit(["id": id, "ok": true, "opened": SandboxProbe.opensSharedMemory(named: request["name"] as? String ?? "")])
                 case "selftest.spawn" where ProcessInfo.processInfo.environment["DIGUP_DECODE_SELFTEST"] == "1":
                     emit(["id": id, "ok": true, "spawned": SandboxProbe.spawnsAChild()])
                 #endif

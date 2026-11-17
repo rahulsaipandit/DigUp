@@ -132,18 +132,52 @@ enum AppContainer {
         ((try? String(contentsOfFile: path, encoding: .utf8)) ?? "").split(separator: "\n").map(String.init).filter { !$0.isEmpty }
     }
 
-    private static func record(_ folder: String, in path: String) {
-        guard !manifestFolders(path).contains(folder) else { return }
+    /// More lines than this and the list is swept for folders that are gone.
+    static let sweepAbove = 64
+
+    /// Adds `folder` to the list: one line appended, as before, so two processes recording at once cannot lose each other's line.
+    /// DOWNSTREAM-FORK (2026-11-17, security): when the list has grown past `sweepAbove` lines it is also swept of the folders that are
+    /// gone. A scratch folder (frames written by ffmpeg, say) is granted, used and deleted, and its line used to stay for ever (about a
+    /// hundred came from a few test runs). A grant goes with its folder, so a gone folder's line has nothing to take away. A folder is
+    /// only called gone when its drive answers: one on a drive that is unplugged or a share that is offline stays on the list, because its
+    /// grant is still on it when it comes back.
+    static func record(_ folder: String, in path: String, sweepAbove limit: Int = sweepAbove) {
+        var known = manifestFolders(path)
         let directory = (path as NSString).deletingLastPathComponent
         try? FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
-        let line = Data((folder + "\n").utf8)
-        if let handle = FileHandle(forWritingAtPath: path) {
-            defer { try? handle.close() }
-            _ = try? handle.seekToEnd()
-            try? handle.write(contentsOf: line)
-        } else {
-            try? line.write(to: URL(fileURLWithPath: path))
+        if !known.contains(folder) {
+            let line = Data((folder + "\n").utf8)
+            if let handle = FileHandle(forWritingAtPath: path) {
+                defer { try? handle.close() }
+                _ = try? handle.seekToEnd()
+                try? handle.write(contentsOf: line)
+            } else {
+                try? line.write(to: URL(fileURLWithPath: path))
+            }
+            known.append(folder)
         }
+        guard known.count > limit else { return }
+        let kept = known.filter { !isGone($0) }
+        if kept.count != known.count {
+            try? Data((kept.joined(separator: "\n") + "\n").utf8).write(to: URL(fileURLWithPath: path), options: .atomic)
+        }
+    }
+
+    /// Whether a folder is certainly gone: it is not there, and the root of its drive is.
+    static func isGone(_ folder: String) -> Bool {
+        guard !FileManager.default.fileExists(atPath: folder) else { return false }
+        let normal = folder.replacingOccurrences(of: "/", with: "\\")
+        let root: String
+        if normal.hasPrefix("\\\\") {   // \server\share\...: the share is the root
+            let parts = normal.dropFirst(2).split(separator: "\\", omittingEmptySubsequences: true)
+            guard parts.count >= 2 else { return false }
+            root = "\\\\" + parts[0] + "\\" + parts[1] + "\\"
+        } else if normal.count >= 3, normal.dropFirst().hasPrefix(":\\") {
+            root = String(normal.prefix(3))
+        } else {
+            return false
+        }
+        return FileManager.default.fileExists(atPath: root)
     }
 
     /// Changes the access list of `folder` for the container: `GRANT_ACCESS` adds read and execute for it (inherited by what
