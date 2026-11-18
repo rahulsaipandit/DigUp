@@ -1006,6 +1006,7 @@ function showMainMenu() {
     [paused ? "Resume Indexing" : "Pause Indexing", () => invoke("pause_indexing", { paused: !paused }).catch(failed),
      null, folders],
     null,
+    ["People…", () => invoke("open_people").catch(failed)],   // DOWNSTREAM-FORK (2026-11-18)
     ["Settings…", () => invoke("open_settings").catch(failed), `${MOD},`],
     state.app.update
       ? [`Update to DigUp ${state.app.update.version}…`, () => invoke("offer_update").catch(failed), null,

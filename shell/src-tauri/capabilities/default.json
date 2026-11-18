@@ -2,6 +2,6 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "The panel's, the window's, setup's, settings' and code folders' pages: Tauri's core (events, the asset URLs, paths). Their commands are the shell's.",
-  "windows": ["panel", "panel-centered", "main", "setup", "settings", "code-folders"],
+  "windows": ["panel", "panel-centered", "main", "setup", "settings", "code-folders", "people"],
   "permissions": ["core:default"]
 }

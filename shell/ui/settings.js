@@ -48,6 +48,7 @@ function renderGeneral() {
   $("center-option").hidden = !info.canCenter;
   $("center").checked = info.centered;
   $("processor").checked = info.processorOnly;
+  $("faces").checked = info.faces === true;
   $("keys").replaceChildren(...info.hotkey.split("+").filter(Boolean).map((key) => element("span", "key", key)));
   const note = notes[info.shortcut.method];
   $("shortcut-note").hidden = !note;
@@ -105,6 +106,20 @@ function wire(box, command) {
 wire($("login"), "set_open_at_login");
 wire($("center"), "set_center_panel");
 wire($("processor"), "set_processor_only");
+wire($("faces"), "set_faces");   // DOWNSTREAM-FORK (2026-11-18)
+$("delete-faces").onclick = (event) => {
+  event.preventDefault();
+  const button = event.currentTarget;
+  if (button.dataset.sure !== "1") {
+    button.dataset.sure = "1";
+    button.textContent = "Click again to delete every face, group and name";
+    setTimeout(() => { button.dataset.sure = ""; button.textContent = "Delete all face data…"; }, 6000);
+    return;
+  }
+  button.dataset.sure = "";
+  button.textContent = "Delete all face data…";
+  invoke("delete_face_data").then(() => { $("faces").checked = false; }).catch(fail);
+};
 wire($("update-checks"), "set_update_checks");
 for (const choice of document.querySelectorAll('input[name="tray-click"]')) {
   choice.addEventListener("change", () => {

@@ -343,6 +343,11 @@ Done, on top of upstream (each is tagged `DOWNSTREAM-FORK` in the code and liste
 [downstream-fork-changes.md](downstream-fork-changes.md)):
 
 - `SetDefaultDllDirectories` in the shell.
+- Person recognition (2026-11-17 and 18): the store, labels, corrections with undo, matching, clustering and name resolver (`DigUpKit/Faces`);
+  the face program `digup-faces` (Rust, YuNet and SFace) and the face step in the indexing pass; `digup faces`, the `faces_*` questions of
+  `search-service`; and the shell's People window and Settings switch. Off until turned on in Settings (`--faces`). 37 face tests; checked on
+  171 of the owner's photos (five groups, named from the window); not checked: the packaged installer, macOS, accuracy beyond that set
+  ([person-recognition.md](person-recognition.md), "Build status").
 - UI restrictions on the helpers' job object.
 - Step 1, first slice: PDFium in a separate `digup decode-worker` process, behind `DIGUP_ISOLATE_DECODERS=1` and off by
   default ([decoder-worker.md](decoder-worker.md)). The full test suite passes with it off and with it forced on for every

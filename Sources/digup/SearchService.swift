@@ -38,6 +38,7 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
     private var searcher: Searcher
     private var codeStore: IndexStore?
     private var codeSearcher: Searcher?
+    private var faceStore: FaceStore?
     private var roots: [String], skipped: [String], types: Set<String>, codeRoots: [String], codeSkipped: [String]
     private let idleSeconds: Double
     private let log: URL
@@ -124,7 +125,10 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
     private func handle(_ op: String, _ request: [String: Any]) throws -> [String: Any] {
         switch op {
         case "search":
-            let text = request["q"] as? String ?? ""
+            // DOWNSTREAM-FORK (2026-11-18): a name in the query ("Priya", "Priya and Sam at the beach") limits the results to photos of those people.
+            let asked = request["q"] as? String ?? ""
+            let person = request["code"] as? Bool == true ? nil : try personFilter(asked)
+            let text = person?.remaining ?? asked
             let code = request["code"] as? Bool ?? false
             let kinds = (request["kinds"] as? [String]).map { Set($0.compactMap(FileKind.init(rawValue:))) }
             let limit = request["limit"] as? Int ?? 40
@@ -153,6 +157,21 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
                     FolderSelection.isSearched($0.path, folders: codeRoots, skipped: codeSkipped)
                         && FileManager.default.fileExists(atPath: $0.path)
                 }
+            } else if let person {
+                let (roots, skipped, types) = (self.roots, self.skipped, self.types)
+                let usable: (String) -> Bool = {
+                    FolderSelection.isSearched($0, folders: roots, skipped: skipped)
+                        && !types.contains(($0 as NSString).pathExtension.lowercased()) && FileManager.default.fileExists(atPath: $0)
+                }
+                if text.isEmpty {
+                    // A photo whose first path is gone or left out still counts through one of its copies.
+                    hits = kinds?.contains(.image) == false ? [] : person.entries.lazy.compactMap { ([$0.path] + $0.copies).first(where: usable) }
+                        .prefix(limit).map { Self.photoHit($0) }
+                } else {
+                    // The words are searched as usual, over more results than shown, and the photos of these people are kept.
+                    hits = Array(try searcher.search(text, queryVector: vector, kinds: kinds, limit: max(limit * 25, 500), prefixLast: prefixLast)
+                        .filter { person.paths.contains($0.path) && usable($0.path) }.prefix(limit))
+                }
             } else {
                 hits = try searcher.search(text, queryVector: vector, kinds: kinds, limit: limit, prefixLast: prefixLast)
                     .filter {
@@ -167,6 +186,7 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
                        "search": Int(Date().timeIntervalSince(embedded) * 1000)],
             ]
             if let warning { reply["warning"] = warning }
+            if let person { reply["people"] = person.names }
             return reply
         case "embed_ahead":
             _ = vector(for: request["q"] as? String ?? "", code: request["code"] as? Bool ?? false)
@@ -248,8 +268,54 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
             }
             return reply
         default:
+            // DOWNSTREAM-FORK (2026-11-18): people in photos. Opened on the first question, as the search role (FacesCommand.swift).
+            if op.hasPrefix("faces_") {
+                if faceStore == nil { faceStore = try FaceStore(directory: directory, role: .search) }
+                return try faceOp(op, request, store: faceStore!)
+            }
             throw CLIError("unknown op \(op)")
         }
+    }
+
+    /// DOWNSTREAM-FORK (2026-11-18): the people a query names (docs/person-recognition.md §8). Nil when faces are not in use, the query names
+    /// nobody, or the faces file cannot be read (then the query is searched as typed). Each name stands for one person, or for every person
+    /// who has it (two people called Sam: photos of either); several names mean photos that have all of them.
+    private struct PersonFilter {
+        var remaining: String
+        var names: [String]
+        var entries: [AlbumEntry]   // newest first
+        var paths: Set<String>      // the photos' paths, and their copies'
+    }
+
+    private func personFilter(_ text: String) throws -> PersonFilter? {
+        if faceStore == nil {
+            guard FileManager.default.fileExists(atPath: directory.appendingPathComponent(FaceStore.file).path) else { return nil }
+            faceStore = try? FaceStore(directory: directory, role: .search)
+        }
+        guard let store = faceStore, let people = try? store.people(), !people.isEmpty else { return nil }
+        let resolution = NameResolver.resolve(text, people: people)
+        guard !resolution.slots.isEmpty else { return nil }
+        var entries: [AlbumEntry]?
+        for slot in resolution.slots {
+            var union: [String: AlbumEntry] = [:]
+            for id in slot.people { for entry in try store.album(of: id) { union[entry.path] = entry } }
+            let paths = Set(union.values.flatMap { [$0.path] + $0.copies })
+            if let kept = entries {
+                entries = kept.filter { paths.contains($0.path) || $0.copies.contains(where: paths.contains) }
+            } else {
+                entries = union.values.sorted { $0.taken != $1.taken ? $0.taken > $1.taken : $0.path < $1.path }
+            }
+        }
+        let found = entries ?? []
+        return PersonFilter(remaining: resolution.remaining, names: resolution.slots.map(\.phrase), entries: found,
+                            paths: Set(found.flatMap { [$0.path] + $0.copies }))
+    }
+
+    /// A photo as a result with no words behind it (a search for people alone).
+    private static func photoHit(_ path: String) -> SearchHit {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: path)
+        return SearchHit(photo: path, modified: (attributes?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0,
+                         size: (attributes?[.size] as? NSNumber)?.int64Value ?? 0)
     }
 
     private func write(_ fields: [String: Any]) {

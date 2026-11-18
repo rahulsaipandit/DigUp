@@ -18,7 +18,7 @@ win() { cygpath -m "$1"; }
 echo "installing $setup"
 MSYS_NO_PATHCONV=1 "$setup" /S
 installed=$(cygpath -u "$LOCALAPPDATA")/DigUp
-ls "$installed/DigUp.exe" "$installed/helper/digup.exe" > /dev/null
+ls "$installed/DigUp.exe" "$installed/helper/digup.exe" "$installed/helper/digup-faces.exe" "$installed/helper/faces/yunet.onnx" "$installed/helper/faces/sface.onnx" > /dev/null   # DOWNSTREAM-FORK (2026-11-18): and the face program
 # The licenses of what the installer carries, beside the app.
 grep -q "GNU LESSER GENERAL PUBLIC LICENSE" "$installed/THIRD-PARTY-NOTICES.txt" || { echo "no license notices"; exit 1; }
 

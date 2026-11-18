@@ -210,6 +210,9 @@ impl Shell {
     /// `index-service` for the folders as they are now.
     fn index_launch(&self) -> Launch {
         let mut args = vec!["index-service".to_string(), "--backfill".to_string()];
+        if self.settings.lock().unwrap().faces {
+            args.push("--faces".into());   // DOWNSTREAM-FORK (2026-11-18)
+        }
         if self.prune.swap(false, Ordering::SeqCst) {
             args.push("--prune".into());
         }
@@ -277,7 +280,8 @@ fn folder_arguments(settings: &Settings, code_folders: &[String]) -> Vec<String>
 #[tauri::command]
 async fn ask(shell: State<'_, Arc<Shell>>, request: Value) -> Result<Value, String> {
     let op = request.get("op").and_then(Value::as_str).unwrap_or_default();
-    if !["search", "embed_ahead", "text", "render", "prewarm", "status", "summaries", "failures"].contains(&op) {
+    // DOWNSTREAM-FORK (2026-11-18): the People window's questions (`faces_*`, answered by search-service's face store).
+    if !["search", "embed_ahead", "text", "render", "prewarm", "status", "summaries", "failures"].contains(&op) && !op.starts_with("faces_") {
         return Err(format!("not a question the panel asks: {op}"));
     }
     shell.search.ask(request).await
@@ -574,6 +578,14 @@ fn open_settings(app: AppHandle) {
     });
 }
 
+/// DOWNSTREAM-FORK (2026-11-18): the People window, where groups of faces are named (docs/person-recognition.md §10).
+#[tauri::command]
+fn open_people(app: AppHandle) {
+    later(&app, |app| {
+        let _ = show_people(app);
+    });
+}
+
 #[tauri::command]
 fn choose_folders(app: AppHandle) {
     later(&app, |app| {
@@ -694,8 +706,8 @@ fn main() {
         .setup(move |app| setup(app, options))
         .invoke_handler(tauri::generate_handler![
             ask, estimate, setup_info, pick_folders, apply_setup_folders, finish_setup, open_path, open_code, reveal, hide_panel, panel_height,
-            panel_area, settings_info, set_open_at_login, set_center_panel, set_processor_only, debug_query, debug_report, window_info,
-            app_state, open_window, open_settings, choose_folders, index_now, quit_app, close_window, pause_indexing,
+            panel_area, settings_info, set_open_at_login, set_center_panel, set_processor_only, set_faces, delete_face_data, debug_query, debug_report, window_info,
+            app_state, open_window, open_settings, open_people, choose_folders, index_now, quit_app, close_window, pause_indexing,
             remove_folder, set_skipped, set_skip_types, set_index_hours, code_setup_info, set_code_folders, choose_code_folders,
             remove_code_folder, turn_off_code, set_code_editor, window_resized, copy_file, drag_out, set_hotkey, hold_hotkey,
             set_tray_click, check_for_updates, offer_update, set_update_checks, open_licenses, retry_failed
@@ -1241,6 +1253,22 @@ fn show_settings(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+/// DOWNSTREAM-FORK (2026-11-18): the People window.
+fn show_people(app: &AppHandle) -> tauri::Result<()> {
+    if let Some(window) = app.get_webview_window("people") {
+        let _ = window.show();
+        let _ = window.set_focus();
+        return Ok(());
+    }
+    WebviewWindowBuilder::new(app, "people", WebviewUrl::App("people.html".into()))
+        .title("DigUp People")
+        .inner_size(860.0, 680.0)
+        .min_inner_size(560.0, 420.0)
+        .center()
+        .build()?;
+    Ok(())
+}
+
 /// What the Settings window shows.
 #[tauri::command]
 fn settings_info(app: AppHandle, shell: State<'_, Arc<Shell>>) -> Value {
@@ -1250,6 +1278,7 @@ fn settings_info(app: AppHandle, shell: State<'_, Arc<Shell>>) -> Value {
         "canOpenAtLogin": shell.opens_at_login(),
         "centered": shell.settings.lock().unwrap().center_panel,
         "processorOnly": settings.processor_only,
+        "faces": settings.faces,
         // Windows' tray reports clicks (Linux's open the menu, a Mac's too).
         "canChooseTrayClick": cfg!(windows),
         "trayClick": if settings.tray_click == "panel" { "panel" } else { "window" },
@@ -1604,6 +1633,42 @@ fn set_processor_only(app: AppHandle, shell: State<'_, Arc<Shell>>, on: bool) ->
     Ok(())
 }
 
+/// DOWNSTREAM-FORK (2026-11-18): finding faces on or off. Turning it off keeps what was found (and the names); "Delete all face data" removes it.
+#[tauri::command]
+fn set_faces(app: AppHandle, shell: State<'_, Arc<Shell>>, on: bool) -> Result<(), String> {
+    {
+        let mut settings = shell.settings.lock().unwrap();
+        settings.faces = on;
+        settings.save(&shell.settings_path).map_err(|error| format!("can't save the settings: {error}"))?;
+    }
+    shell.index.stop();
+    later(&app, run_index);
+    Ok(())
+}
+
+/// DOWNSTREAM-FORK (2026-11-18): deletes `faces.sqlite` (faces, groups, names, the undo log) and turns finding faces off. Both helpers are ended
+/// first (Windows will not delete a file that is open) and start again when needed.
+#[tauri::command]
+fn delete_face_data(app: AppHandle, shell: State<'_, Arc<Shell>>) -> Result<(), String> {
+    {
+        let mut settings = shell.settings.lock().unwrap();
+        settings.faces = false;
+        settings.save(&shell.settings_path).map_err(|error| format!("can't save the settings: {error}"))?;
+    }
+    shell.search.stop();
+    shell.index.stop();
+    if let Some(index) = shell.options.index_folder() {
+        for end in ["", "-wal", "-shm"] {
+            let file = index.join(format!("faces.sqlite{end}"));
+            if file.exists() {
+                std::fs::remove_file(&file).map_err(|error| format!("can't delete {}: {error}", file.display()))?;
+            }
+        }
+    }
+    later(&app, run_index);
+    Ok(())
+}
+
 #[tauri::command]
 fn set_center_panel(app: AppHandle, shell: State<'_, Arc<Shell>>, on: bool) -> Result<(), String> {
     {
@@ -1652,12 +1717,13 @@ fn make_tray(app: &AppHandle, shell: &Arc<Shell>) -> tauri::Result<()> {
     let index = MenuItem::with_id(app, "index", "Index Now", true, None::<&str>)?;
     let pause = MenuItem::with_id(app, "pause", "Pause Indexing", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
+    let people = MenuItem::with_id(app, "people", "People…", true, None::<&str>)?;
     let check = MenuItem::with_id(app, "check", "Check for Updates…", true, None::<&str>)?;
     let quit_item = MenuItem::with_id(app, "quit", "Quit DigUp", true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
     let menu = Menu::with_items(
         app,
-        &[&status, &separator, &search, &open, &folders, &index, &pause, &settings, &check,
+        &[&status, &separator, &search, &open, &folders, &index, &pause, &people, &settings, &check,
           &PredefinedMenuItem::separator(app)?, &quit_item],
     )?;
     // DigUp's logo, in its colors (tray_icon.rs).
@@ -1681,6 +1747,9 @@ fn make_tray(app: &AppHandle, shell: &Arc<Shell>) -> tauri::Result<()> {
             }
             "settings" => later(app, |app| {
                 let _ = show_settings(app);
+            }),
+            "people" => later(app, |app| {
+                let _ = show_people(app);
             }),
             "update" => updates::offer(app),
             "check" => {

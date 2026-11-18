@@ -44,6 +44,8 @@ final class IndexService: @unchecked Sendable {
     /// The index folder (where `Watchdog` leaves a note about a file it stopped on).
     private let folder: URL
     private let model: SharedEmbedder
+    /// DOWNSTREAM-FORK (2026-11-17): the face step, when the person turned faces on (docs/person-recognition.md).
+    private let faces: FaceStep?
     /// The last report of folders that aren't there or can't be read, by index (said again only when it changes).
     private var unavailable: [Bool: (missing: [String], unreadable: [String])] = [:]
     private let modelReady: () -> Bool
@@ -67,11 +69,12 @@ final class IndexService: @unchecked Sendable {
     private var yieldAt = Date.distantPast
     private let wake = DispatchSemaphore(value: 0)
 
-    init(main: Part, code: Part?, folder: URL, model: SharedEmbedder, modelReady: @escaping () -> Bool,
+    init(main: Part, code: Part?, folder: URL, faces: FaceStep? = nil, model: SharedEmbedder, modelReady: @escaping () -> Bool,
          backfill: Bool, newFilesLimit: Int, linger: Double) {
         self.main = main
         self.code = code
         self.folder = folder
+        self.faces = faces
         self.model = model
         self.modelReady = modelReady
         self.backfillAllowed = backfill
@@ -98,6 +101,8 @@ final class IndexService: @unchecked Sendable {
                 if let keepOnly = part.keepOnly {
                     let pruned = try part.store.prune(keepingUnder: keepOnly.map(\.path))
                     if pruned > 0 { emit(["event": "pruned", "files": pruned, "code": part.code]) }
+                    // DOWNSTREAM-FORK (2026-11-18, review): the faces of a folder taken out go too (the main index's folders; not for the code part).
+                    if !part.code { faces?.prune(keepingUnder: keepOnly.map(\.path)) }
                 }
             }
         } catch {
@@ -163,6 +168,12 @@ final class IndexService: @unchecked Sendable {
                (try? code?.store.pendingCount() ?? 0) ?? 1 == 0, (try? main.store.unfinishedCount().files) ?? 0 > 0 {
                 guard finishLongFiles() else { break }
                 if lock.withLock({ syncRequested || codeSyncRequested }) { continue }
+            }
+            // DOWNSTREAM-FORK (2026-11-17): the faces of photos indexed before faces were turned on, once everything else is done (newest first, resumable).
+            if let faces, lock.withLock({ backfillAllowed }), (try? main.store.pendingCount()) ?? 1 == 0,
+               (try? main.store.unfinishedCount().files) ?? 0 == 0 {
+                guard faceBackfill(faces) else { break }
+                if lock.withLock({ syncRequested || codeSyncRequested && code != nil }) { continue }   // not `codeSyncRequested` alone: it starts true, and without code folders nothing clears it
             }
             if code != nil, lock.withLock({ codeSyncRequested }) { continue }
             pass = [:]   // the pass is over: the next one counts from zero
@@ -309,6 +320,28 @@ final class IndexService: @unchecked Sendable {
             emit(["event": "error", "message": "\(error)", "fatal": true])
             return false
         }
+    }
+
+    /// DOWNSTREAM-FORK (2026-11-17): finds the faces in the photos the main index holds that have no face scan yet. Stops between batches for a
+    /// stop, "backfill off" or a new sync. Events: {"event":"faces","state":"scanning","done":n,"total":n} and a last one with "state":"done"
+    /// (or "unavailable" with "why" when the face program cannot run: the files stay indexed and searchable).
+    private func faceBackfill(_ faces: FaceStep) -> Bool {
+        let files = (try? main.store.files(under: main.roots.map { $0.standardizedFileURL.path })) ?? []
+        let started = Date()
+        let done = faces.backfill(files, minSide: main.indexer.minImageSide, shouldStop: { [self] in
+            lock.withLock { stopRequested || !backfillAllowed || Date() >= yieldAt && (syncRequested || codeSyncRequested && code != nil) }
+        }, progress: { done, total in
+            emit(["event": "faces", "state": "scanning", "done": done, "total": total])
+        })
+        faces.close()   // the face program's memory goes back while grouping runs
+        // DOWNSTREAM-FORK (2026-11-18): new faces are grouped for the People window to offer.
+        if faces.needsRegroup, let groups = faces.regroup(shouldStop: { [self] in lock.withLock { stopRequested } }) {
+            emit(["event": "faces", "state": "grouped", "groups": groups])
+        }
+        if let why = faces.lastError { emit(["event": "faces", "state": "unavailable", "why": why]) }
+        else if done > 0 { emit(["event": "faces", "state": "done", "scanned": faces.scanned, "failed": faces.failed,
+                                 "ms": Int(Date().timeIntervalSince(started) * 1000)]) }
+        return true
     }
 
     /// Waits up to `linger` seconds for something to do. False: time's up, or told to stop.

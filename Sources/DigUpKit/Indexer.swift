@@ -43,6 +43,11 @@ public final class Indexer {
     /// When set, an index built with another model or other settings is emptied and embedded again (the app: a new
     /// version may bring a new model), and this hears about it. When nil, indexing stops with `fingerprintMismatch`.
     public var resetOnModelChange: ((_ indexed: String, _ now: String) -> Void)?
+    /// DOWNSTREAM-FORK (2026-11-17): person recognition (docs/person-recognition.md 5.2). When set, the faces in each photo are found on the
+    /// prepared picture, after the file is committed here and before the picture is deleted. Off (nil) unless the person turned faces on.
+    public var faceStep: FaceStep?
+    /// DOWNSTREAM-FORK (2026-11-17): what the face backfill passes to the picture reader, the same as indexing does.
+    public var minImageSide: Int { options.minImageSide }
 
     /// The vector source of the embedders `makeEmbedder` makes, when it's known without starting one (llama.cpp's is):
     /// then `checkModel()` can notice a new model before anything needs embedding.
@@ -73,6 +78,7 @@ public final class Indexer {
     public func closeWorker() {
         worker?.close()
         worker = nil
+        faceStep?.close()   // DOWNSTREAM-FORK (2026-11-17): the face program's memory goes back as well
     }
 
     /// Stops the worker and removes the scratch folder, for a process that's about to exit (deinit won't run then).
@@ -241,6 +247,13 @@ public final class Indexer {
             // commits: without a pool per job it all stayed until the process exited (~30 KB a text chunk).
             let modelWasRunning = worker != nil
             let results = try autoreleasepool { try commit(prepared) }
+            // DOWNSTREAM-FORK (2026-11-17): the face step reads the prepared pictures of photos (not screenshots) while they still exist. It never throws.
+            if let faceStep, case .images(false, let ready) = prepared.payload {
+                faceStep.scan(ready.map { item in
+                    let file = prepared.batch[item.slot]
+                    return FaceStep.Item(path: file.path, size: file.size, mtime: file.mtime, taken: item.image.taken, picture: item.image.path)
+                })
+            }
             let seconds = Date().timeIntervalSince(started)
             if modelWasRunning { measure(prepared, seconds: seconds) }   // else it's seconds of the model starting
             committed(index, job, results, seconds / Double(job.files.count))

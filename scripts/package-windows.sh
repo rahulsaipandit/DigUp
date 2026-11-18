@@ -10,6 +10,9 @@ cd "$(dirname "$0")/.."
 [[ -x Vendor/ffmpeg/bin/ffmpeg.exe ]] || { echo "no Vendor/ffmpeg/bin/ffmpeg.exe: run scripts/build-ffmpeg.sh in MSYS2" >&2; exit 1; }
 # DOWNSTREAM-FORK (2026-11-17, security): the Rust readers that replace stb and miniz (scripts/build-decode-rs.sh): the build below links them.
 [[ -f Vendor/decode/lib/digup_decode.lib ]] || { echo "no Vendor/decode/lib/digup_decode.lib: run scripts/build-decode-rs.sh" >&2; exit 1; }
+# DOWNSTREAM-FORK (2026-11-18): the face program (faces-rs, scripts/build-faces-rs.sh), which the index helper starts beside itself when faces are turned on.
+[[ -f Vendor/faces-models/sface.onnx && -f Vendor/faces-models/yunet.onnx ]] || { echo "no Vendor/faces-models: run scripts/fetch-face-models.sh" >&2; exit 1; }
+[[ -x Vendor/faces-build/release/digup-faces.exe ]] || { echo "no Vendor/faces-build/release/digup-faces.exe: run scripts/build-faces-rs.sh" >&2; exit 1; }
 TAURI_CLI=2.12.2
 
 swift build -c release --product digup
@@ -27,6 +30,11 @@ cp .build/release/digup.exe Vendor/llama/lib/*.dll Vendor/pdfium/bin/pdfium.dll 
 cp "$swift_runtime"/*.dll "$helper/"
 cp "$crt"/*.dll "$helper/"   # over the Swift runtime's copies of the same: the newer C++ runtime
 cp Vendor/ffmpeg/bin/ffmpeg.exe Vendor/ffmpeg/bin/ffprobe.exe "$helper/"   # the small static build, no DLLs
+# DOWNSTREAM-FORK (2026-11-18): the face program (ONNX Runtime is linked into it: no DLL) and the two face models it reads (YuNet, MIT, and SFace,
+# Apache 2.0: about 39 MB; their licenses are in the notices, scripts/fetch-face-models.sh checks the files). DigUp finds them in helper\faces\ beside it.
+cp Vendor/faces-build/release/digup-faces.exe "$helper/"
+mkdir -p "$helper/faces"
+cp Vendor/faces-models/yunet.onnx Vendor/faces-models/sface.onnx "$helper/faces/"
 
 # With the release's signing key (TAURI_SIGNING_PRIVATE_KEY, and its password) the packages that update themselves are
 # signed for in-app updates (a .sig beside each). Installed copies check those signatures with the public key in

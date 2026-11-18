@@ -1,0 +1,27 @@
+<!doctype html>
+<!-- DOWNSTREAM-FORK (2026-11-18): the People window (docs/person-recognition.md §10). -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>DigUp People</title>
+  <link rel="stylesheet" href="setup.css">
+  <link rel="stylesheet" href="people.css">
+</head>
+<body>
+  <header class="bar">
+    <nav class="tabs" id="tabs" role="tablist">
+      <button role="tab" data-tab="groups">To name <span class="count" id="groups-count"></span></button>
+      <button role="tab" data-tab="people">People <span class="count" id="people-count"></span></button>
+    </nav>
+    <span class="message" id="message"></span>
+    <span class="status" id="status"></span>
+    <button id="undo" class="plain" title="Undo the last change" disabled>Undo</button>
+  </header>
+  <main id="main">
+    <section id="groups" class="tab" role="tabpanel"></section>
+    <section id="people" class="tab" role="tabpanel" hidden></section>
+    <section id="album" class="tab" role="tabpanel" hidden></section>
+  </main>
+  <script src="people.js"></script>
+</body>
+</html>

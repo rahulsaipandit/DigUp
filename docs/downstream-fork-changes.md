@@ -9,6 +9,139 @@ Entry format: date and time (local), category, files, what changed, why, how it 
 
 ---
 
+## 2026-11-18 (PST, evening) — Review fixes for the face work
+Category: fix. Files: `Sources/DigUpKit/Faces/FaceStep.swift`, `FaceStore.swift`, `FaceMatching.swift`, `FacePeople.swift`, `FaceClustering.swift`,
+`Sources/digup/SearchService.swift`, `IndexService.swift`, `shell/ui/people.js`, `scripts/package-windows.sh`, `docs/person-recognition.md`.
+- A mid-batch write error no longer marks already-stored pictures as failed; `scan` returns false when the face program cannot start and the backfill stops instead of decoding the library for nothing.
+- A picture that cannot be read now is retried like any failure; only "too small" is recorded as a permanent empty scan.
+- `matchFaces` reads inside its write transaction (a name given during regrouping no longer rolls the run back).
+- `album(of:)` fetches copies with one query; clustering compares photo numbers, not Strings, in the n² loop.
+- Search by person: a name alone honours the kinds filter and finds a photo through a copy when its first path is gone.
+- Faces of folders taken out of Settings are now deleted when the index starts with its folder list (`FaceStore.prune`, called from `IndexService`); before, nothing called `removeFolder`.
+- The × in the People window's "Show all" is titled for what it does (leave the face out). A garbled comment in `package-windows.sh` is fixed.
+Not fixed: a clustering time budget; a pre-filtered search for name plus words (still the top few hundred word hits); a single deleted photo inside a kept folder.
+Checked: see the commit's test run. On a sync: keep these, they are tagged `DOWNSTREAM-FORK`.
+
+---
+
+## 2026-11-18 (PST, afternoon) — The installer carries the face program and the two face models (P1, fifth step)
+
+- **Category:** packaging
+- **Files:** `scripts/package-windows.sh`, `scripts/fetch-face-models.sh` (new), `scripts/licenses/yunet-LICENSE.txt` and `sface-LICENSE.txt` (new),
+  `scripts/check-windows-package.sh`, `scripts/notices.py`, `.github/workflows/packages.yml`, `.github/workflows/security.yml`,
+  `Sources/DigUpKit/Faces/FaceStep.swift` (`locate`), `Tests/DigUpKitTests/FaceStepTests.swift`.
+- **What changed:** `package-windows.sh` requires `Vendor/faces-build/release/digup-faces.exe` (`scripts/build-faces-rs.sh`) and `Vendor/faces-models/`
+  (`scripts/fetch-face-models.sh`: downloads `yunet.onnx` and `sface.onnx` from OpenCV Zoo's Hugging Face repositories and checks their SHA-256) and puts
+  the program in the installer's `helper\` folder and the models in `helperaces\`. `FaceStep.locate` uses the models folder's `faces\` when it has the
+  models, else `faces\` beside the program. The notices gain ONNX Runtime, YuNet's and SFace's license texts and the 44 crates of the face program. The package
+  check requires the program and both models in the installed folder; the packages workflow builds and fetches them; the security workflow audits `faces-rs`.
+- **Licenses (checked 2026-11-18):** OpenCV Zoo's `LICENSE` files and READMEs: YuNet is MIT (Copyright (c) 2020 Shiqi Yu), SFace is Apache 2.0, and each README says
+  all files in its directory carry that license. The two files on this machine are byte-identical to the published `face_detection_yunet_2023mar.onnx` and
+  `face_recognition_sface_2021dec.onnx` (same size and SHA-256 as Hugging Face lists). Not covered by this check: the terms of the datasets SFace was trained on
+  (its README points to the SFace paper); the license is for the model file.
+- **Checked:** the fetch script downloaded both files and the hashes matched; `notices.py windows` runs and prints the new sections; 38 face tests pass (a new one
+  for the models beside the program); script syntax.
+- **Not checked:** a full installer build and the package check (the whole Windows toolchain and a long build), the installer's growth (about 19.7 MB for the program
+  and 38.9 MB for the models).
+- **On a sync:** small tagged lines in the scripts and workflows; the three new files.
+
+---
+
+## 2026-11-18 (PST, midday) — Search by person (P1, fourth step)
+
+- **Category:** new feature (only does anything once someone is named)
+- **Files:** `Sources/digup/SearchService.swift` (`personFilter`, `photoHit`; the `search` op), `Sources/DigUpKit/Faces/FaceViews.swift`
+  (`SearchHit(photo:…)`).
+- **What changed:** `search-service` reads the query for names of people (`NameResolver`: several-word names, accents, possessives, aliases).
+  A name limits the results to photos of that person; several names, photos with all of them; a name two people share, photos of either. A query
+  of names alone lists their photos, newest first; with other words, those are searched as before (over more results than shown) and only
+  the people's photos are kept. The reply says which names it understood (`people`). Code search and queries with no name are unchanged, and
+  so are all indexes without `faces.sqlite`.
+- **Checked:** on the five named people of the owner's 171 photos (a copy): a name alone returns exactly that person's photos (60, 51, 46, 85,
+  86 = their album counts); lower case works; two names return photos with both; name plus a word is always a subset of both the word's
+  plain results and the person's photos (15 words tried).
+- **Not checked:** the panel and window showing these results (photos with no text behind them have empty `info`), a person who shares a name
+  with a word in a file's text, timing on an index of tens of thousands of photos, the pasted possessive ("Priya's") with a word that has
+  hits, macOS and Linux.
+- **On a sync:** one new block in `SearchService.swift`, tagged.
+
+---
+
+## 2026-11-18 (PST, morning) — Grouping, the People window and the Settings switch (P1, third step)
+
+- **Category:** new feature (off unless "Recognize people in photos" is turned on in Settings)
+- **Files:** `Sources/DigUpKit/Faces/FaceViews.swift` (new), `FacePeople.swift` (`add(group:to:)`), `FaceStep.swift` (`regroup`),
+  `Sources/digup/FacesCommand.swift` (new: `digup faces`, the `faces_*` questions), `Sources/digup/SearchService.swift`,
+  `Sources/digup/IndexService.swift` (groups after the backfill), `Sources/digup/main.swift`, `shell/ui/people.{html,css,js}` (new),
+  `shell/ui/settings.{html,js}`, `shell/ui/window.js` (menu entry), `shell/src-tauri/src/{main,settings}.rs`,
+  `shell/src-tauri/capabilities/default.json`, `Tests/DigUpKitTests/FaceTests.swift`.
+- **What changed:** the index helper groups the faces it found (matching to named people first) after a backfill; `search-service` answers
+  `faces_status`, `faces_groups`, `faces_group`, `faces_people`, `faces_album`, `faces_name` (new person, or `person` to add the group to
+  someone named: one undo), `faces_rename`, `faces_merge`, `faces_ignore(_group)`, `faces_not_person`, `faces_undo`, as the search role. The
+  shell's People window (tray menu and the window's menu) shows each group as a few faces cut from the photos, to name, add to a person, leave
+  out, or review face by face; and lists people with their photos, rename and merge. Settings → General has "Recognize people in photos"
+  (passes `--faces` to the index helper) and "Delete all face data" (ends both helpers, deletes `faces.sqlite`, turns it off).
+- **Checked:** on the 171 photos: 5 groups of 86, 85, 60, 51 and 46 faces; a contact sheet of eight faces per group showed one person each,
+  with the crops right on the three photos that have EXIF rotation, so the boxes are in the upright picture (§17 row 12 for this path).
+  Every `faces_*` question was run against a copy of that index (name, add, album, rename with an empty name refused, undo twice).
+  `FaceTests` + `FaceStepTests`: 37 pass. `cargo check` of the shell passes; the two shell `.cjs` tests pass.
+- **Fix (same day):** with `--faces` the index helper looped on the face backfill for ever and never went idle, so nothing was grouped: the
+  check after it was `syncRequested || codeSyncRequested`, and `codeSyncRequested` starts true and is never cleared without code folders (the
+  other branches add `&& code != nil`). Now it goes idle and exits; it groups once at start and again whenever pictures were scanned, and the
+  face program is started by the first picture, not by an empty backfill. Checked on a copy of the 405-face index: `grouped` (5), `idle`, `exit`.
+- **Not checked:** the People window itself in a running shell (no screenshot: it was written and its operations tested, not opened), a
+  Settings round trip, macOS and Linux, the packaged installer (it does not carry `digup-faces.exe` yet).
+- **On a sync:** new files, plus small tagged hooks in the shell's `main.rs`, `settings.rs`, `settings.*` and `window.js`.
+
+---
+
+## 2026-11-18 (PST, early) — Face program (Rust) and the face step in the indexing pass (P1, second step)
+
+- **Category:** new feature (off unless `index-service --faces` is passed)
+- **Files:** `faces-rs/` (new crate `digup-faces`: `src/lib.rs`, `src/main.rs`, `Cargo.toml`, `Cargo.lock`), `scripts/build-faces-rs.sh`,
+  `Sources/DigUpKit/Faces/FaceWorker.swift`, `Sources/DigUpKit/Faces/FaceStep.swift`, `Sources/DigUpKit/Indexer.swift` (`faceStep` hook),
+  `Sources/digup/IndexService.swift` (`faces` events and the backfill), `Sources/digup/main.swift` (`--faces`),
+  `Tests/DigUpKitTests/FaceStepTests.swift`, `.gitignore` (`scripts/test-photos/`), `docs/person-recognition.md` (§5.1 options and choice).
+- **What changed:** a separate program, `digup-faces`, runs YuNet (detector) and SFace (128-d embedder) through the `ort` crate (ONNX Runtime
+  linked statically), checks the model files' SHA-256, and talks JSON lines on stdin/stdout. It takes picture paths, not pixels, and has size
+  limits. Swift's `FaceWorker` runs it with a watchdog; `FaceStep` records faces, empty results and failures in `faces.sqlite` and never throws.
+  After a batch commits, `Indexer` hands the prepared (at most 1024 px) pictures to the step; a face failure marks only that scan row `failed`.
+  The index service backfills already indexed photos, newest first and resumable, once nothing else is pending.
+- **Why:** option C in §5.1: a crash in the model code cannot take the index down, and the Python reference ports one to one.
+- **Checked:** parity with the Python reference on 171 photos: median cosine 0.9998, minimum 0.9743 (one face is under the 0.98 bar), boxes within
+  3.76 px, no face missing. `digup index-service --faces --backfill` on those photos: 171 scan rows (148 with faces, 23 without), 405 faces.
+  `cargo test` (5 tests) and `FaceStepTests` (6 tests).
+- **Not checked:** whether the prepared picture is already EXIF-oriented (§17 row 12); the full `swift test` suite; macOS; the helper did not
+  exit by itself after the backfill during my run (see the next entry up: fixed). ONNX Runtime
+  downloads to a cache on C: (about 617 MB, not movable by a parameter).
+- **Not built:** `digup faces` and search-service person support, the People window, packaging `digup-faces.exe` beside `digup.exe`.
+- **On a sync:** new files and three small hooks (all tagged `DOWNSTREAM-FORK`); the `Indexer.swift` hook sits after the batch commit.
+
+---
+
+## 2026-11-17 (PST, night) — Person recognition, the part that needs no model (P1, first step)
+
+- **Category:** new feature (not enabled anywhere yet)
+- **Files:** `Sources/DigUpKit/Faces/` (`FaceTypes`, `FaceStore`, `FaceClustering`, `FaceMatching`, `FacePeople`, `FaceSearch`),
+  `Tests/DigUpKitTests/FaceTests.swift`, `docs/person-recognition.md`.
+- **What changed:** `faces.sqlite` (own file beside the index, one owning process per table, enforced by a role), scan state with a hard
+  floor and soft thresholds kept in `meta`, labels and rejections anchored by path, box and an embedding copy (they survive a rescan and
+  re-attach, or wait in a review list), person ids that the program never deletes, the correction operations (name a group, enrol, rename,
+  aliases, move, confirm, "not this person", merge, split, dissolve, ignore, restore) with `op_log` undo, a person's core and matching
+  by threshold and runner-up margin, seeded Chinese Whispers clustering with a bounded heap, cancel and one atomic write, group ids carried
+  across rebuilds, albums with one entry per content key, the content key, a name resolver for queries (multi-word names, possessives,
+  accents, shared names), and folder removal that deletes faces, labels and the undo log.
+- **Why:** the design (`docs/person-recognition.md`) puts these in the first phase; they do not depend on which model makes the vectors.
+- **Not built:** the face worker (`digup face-worker`, YuNet and SFace through ONNX Runtime: spike F1), the face step in the indexing pass,
+  the backfill, `search-service` and `digup faces` commands, the shell's People view and Settings switch, status counts. Nothing calls the new
+  code, so no behaviour changes. Faces stay off, because nothing scans.
+- **Checked:** `swift test --filter FaceTests`: 30 tests pass on this machine, with generated vectors only. Not checked: accuracy on real
+  faces (no model is on this machine yet), clustering time at 81,000 faces (the all-pairs loop is O(n²), and was only run on small sets),
+  the rest of the test suite (not re-run), macOS build (`FaceTests` and the new files use no platform API, but were not built there).
+- **On a sync:** the files are new, so nothing conflicts. The only shared file touched is this one.
+
+---
+
 ## 2026-11-17 (PST, night) — Search helper is started with the current folders, not the ones at launch
 
 - **Category:** bug fix

@@ -69,13 +69,13 @@ def miniz_license():
     sys.exit("notices: Vendor/miniz/LICENSE is missing (run scripts/fetch-vendor.sh)")
 
 
-def rust_crates(platform):
+def rust_crates(platform, folder="shell/src-tauri"):
     """The crates in the app's binary for the platform: Cargo's resolve graph from the app, through normal
     dependencies, without proc-macro crates (they run while compiling)."""
     target = {"linux": "x86_64-unknown-linux-gnu", "windows": "x86_64-pc-windows-msvc"}[platform]
     metadata = json.loads(subprocess.run(
         ["cargo", "metadata", "--format-version", "1", "--locked", "--filter-platform", target],
-        cwd=ROOT / "shell/src-tauri", check=True, capture_output=True, encoding="utf-8").stdout)
+        cwd=ROOT / folder, check=True, capture_output=True, encoding="utf-8").stdout)
     packages = {package["id"]: package for package in metadata["packages"]}
     nodes = {node["id"]: node for node in metadata["resolve"]["nodes"]}
     root = metadata["resolve"]["root"]
@@ -96,8 +96,8 @@ def rust_crates(platform):
     return sorted((packages[i] for i in seen), key=lambda package: (package["name"], package["version"]))
 
 
-def rust_section(platform):
-    crates = rust_crates(platform)
+def rust_section(platform, folder="shell/src-tauri", title="Rust crates in the app", intro=None):
+    crates = rust_crates(platform, folder)
     by_text = {}   # a license file's text, its spacing aside → the text and the crates that ship it (printed once)
     without = []
     for crate in crates:
@@ -109,10 +109,10 @@ def rust_section(platform):
         for path in files:
             text = read(path)
             by_text.setdefault(" ".join(text.split()), (text, []))[1].append(label)
-    parts = [RULE, f"Rust crates in the app ({len(crates)}), each under its own license", RULE, "",
-             "The app around DigUp's search on Windows and Linux is written in Rust with Tauri (https://tauri.app). "
-             "These are the crates it is built from, with the license files they ship; a text several crates share "
-             "is printed once, after their names.", ""]
+    parts = [RULE, f"{title} ({len(crates)}), each under its own license", RULE, "",
+             (intro or "The app around DigUp's search on Windows and Linux is written in Rust with Tauri (https://tauri.app). "
+              "These are the crates it is built from, with the license files they ship; a text several crates share "
+              "is printed once, after their names."), ""]
     for text, labels in sorted(by_text.values(), key=lambda item: item[1][0]):
         parts += ["-" * 80, *labels, "-" * 80, "", text, ""]
     if without:
@@ -194,6 +194,20 @@ def main():
                           "Their source is Ubuntu's: https://packages.ubuntu.com/jammy. The .deb uses your system's "
                           "own copies instead.")]
     parts.append(rust_section(platform))
+    if windows:
+        # DOWNSTREAM-FORK (2026-11-18): the face program, digup-faces.exe (faces-rs), in the helper folder.
+        parts.append(section("ONNX Runtime (https://onnxruntime.ai), linked into digup-faces.exe, runs the face models",
+                             "ONNX Runtime is Copyright (c) Microsoft Corporation, licensed under the MIT License (the text of which "
+                             "is among the licenses printed with the Rust crates below)."))
+        parts.append(section("YuNet (https://github.com/ShiqiYu/libfacedetection.train), finds faces: yunet.onnx in DigUp's helper folder, "
+                             "unchanged, as published in OpenCV Zoo (https://github.com/opencv/opencv_zoo, face_detection_yunet_2023mar.onnx)",
+                             need(ROOT / "scripts/licenses/yunet-LICENSE.txt")))
+        parts.append(section("SFace (https://arxiv.org/abs/2205.12010), tells faces apart: sface.onnx in DigUp's helper folder, unchanged, as "
+                             "published in OpenCV Zoo (https://github.com/opencv/opencv_zoo, face_recognition_sface_2021dec.onnx)",
+                             need(ROOT / "scripts/licenses/sface-LICENSE.txt")))
+        parts.append(rust_section(platform, "faces-rs", "Rust crates in the face program (digup-faces.exe)",
+                                  "digup-faces.exe, DigUp's face program, is built from these crates, with the license files they ship; "
+                                  "a text several crates share is printed once, after their names."))
     out.write_text("\n".join(parts) + "\n", encoding="utf-8")
     print(f"{out}: {out.stat().st_size // 1024} KB")
 

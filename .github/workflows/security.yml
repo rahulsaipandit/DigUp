@@ -10,6 +10,7 @@ on:
     branches: [main]
     paths:
       - 'decode-rs/**'
+      - 'faces-rs/Cargo.*'
       - 'shell/src-tauri/Cargo.*'
       - 'shell/src-tauri/.cargo/audit.toml'
       - 'scripts/vendor-checksums.json'
@@ -21,6 +22,7 @@ on:
   pull_request:
     paths:
       - 'decode-rs/**'
+      - 'faces-rs/Cargo.*'
       - 'shell/src-tauri/Cargo.*'
       - 'shell/src-tauri/.cargo/audit.toml'
       - 'scripts/vendor-checksums.json'
@@ -46,6 +48,9 @@ jobs:
       # decode-rs reads files from anywhere: a vulnerability in any of its packages fails the job.
       - name: cargo audit (decode-rs)
         run: cargo audit --file decode-rs/Cargo.lock
+      # DOWNSTREAM-FORK (2026-11-18): the face program reads the pictures DigUp's sandboxed decode wrote (JPEG and PNG), through the image crate.
+      - name: cargo audit (faces-rs)
+        run: cargo audit --file faces-rs/Cargo.lock
       # The shell: vulnerabilities fail the job, except those in shell/src-tauri/.cargo/audit.toml, each with its reason.
       - name: cargo audit (shell)
         run: cd shell/src-tauri && cargo audit

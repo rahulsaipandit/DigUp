@@ -1,6 +1,6 @@
 # Person recognition — design
 
-Status: **draft, reviewed against the code on 2026-11-17, nothing built.** Owner: Rahul.
+Status: **draft, reviewed against the code on 2026-11-17. Started 2026-11-17: the model-independent core of P1 is built and tested (see "Build status" at the end); the face worker, search and UI are not.** Owner: Rahul.
 This is a fork-only feature (see [downstream-fork-changes.md](downstream-fork-changes.md)); upstream DigUp has no face
 recognition. Each claim is one of: **checked** (read in this repository), **reported** (measured by the smart-photos project,
 on its tablet, not here), or **[verify]** (an assumption a spike must settle).
@@ -56,6 +56,10 @@ Why: they are the only pair with measurements behind them; both are permissively
 SCRFD weights are research-only **[verify current terms]**, which matters only if the fork is distributed); and this PC does not
 have the tablet's limits, so the choice is not forced.
 
+**Detector input size (checked):** the `yunet.onnx` we have takes a **fixed 640×640** input, while our prepared pictures are up to 1024 px. A picture
+must be resized or padded into that square, which shrinks faces by up to 37% (a 3%-wide face in a 1024 px picture becomes about 19 px). Lap's `det_500m`
+takes any size, so it can run on the full 1024 px picture. F2 and F3 measure which finds more small faces; the choice of detector is open until then.
+
 Why it may change: SFace was picked to fit a tablet, and this library is hard (photos from 2003, children who aged, scans, profiles,
 small faces in group shots). A larger ArcFace-class embedder with permissive weights may do better **[verify one exists]**.
 Decide after measuring (§9), not before.
@@ -65,7 +69,7 @@ A second reference exists: **Lap** (`D:\Github\lap`, a Tauri photo manager) runs
 ([t_face.rs](D:/Github/lap/src-tauri/src/t_face.rs), [t_common.rs](D:/Github/lap/src-tauri/src/t_common.rs)). That is the stronger-but-less-permissive
 pair this section asked about: both file names match InsightFace's model packs, whose weights are research-only **[verify the terms of
 exactly these files]**. Lap publishes no accuracy or speed numbers, so it shows the pair is usable, not that it is better. It is the first
-candidate for F4. See §16 for the full comparison.
+candidate for F4. See §16 for the full comparison. **Both pairs are on this machine now** (see "Models on this machine" at the end), so F1 and F4 can start.
 
 Rules that hold whatever the model:
 
@@ -94,6 +98,23 @@ Rules that hold whatever the model:
   these models. Alternative to evaluate: OpenCV's `FaceDetectorYN` and `FaceRecognizerSF`, which are these exact models with alignment
   included, but OpenCV is far larger. A small Rust crate behind a C interface (as `decode-rs`) is a third option, and Lap shows it works: it uses the `ort` crate for exactly this job.
 DigUp already builds Rust (`decode-rs`) and its shell is Rust, so this is now the leading option **[verify which fits `Package.swift`, `build.sh`, `scripts/package-windows.sh`]**.
+- **Runtime options evaluated, and the choice (decided 2026-11-17).** The need: run YuNet (or `det_500m`) and SFace on the CPU, in a **separate process** (see
+  "A process of its own" below), read the prepared JPEG or PNG, do the alignment and return vectors; Windows first.
+
+  | Option | For | Against |
+  |---|---|---|
+  | **A. Swift calls the ONNX Runtime C API** (a system-library module over `onnxruntime_c_api.h`, like `CLlama`) | One language with the helper; no new toolchain step | Swift has no image or array library on Windows: resizing, the letterbox, the similarity warp, NMS and the box decoding would all be hand-written, plus a JPEG reader (stb is there, but it is the reader `decode-rs` is replacing for safety). Needs a separately fetched ORT binary and header, with a version to keep in step. Nothing in the repository or on the other projects' machines shows this working. |
+  | **B. A Rust static library linked into `DigUpKit`** (as `decode-rs` is) | Proven build path (`scripts/build-decode-rs.sh`, `CDecode`) | It runs **inside** the index service, so a native ONNX Runtime crash or runaway memory takes indexing down; that breaks the rule that a face failure never fails a file (§17 row 20) and cannot be capped or killed on its own. |
+  | **C. A Rust program of its own (`digup-faces`), the index service starts it and speaks JSON lines to it** | Process isolation by construction, memory capped and measured on its own, killable at once (§5.1, F7). The `ort` crate does exactly this job in Lap (`t_face.rs`) and `image` and `ndarray` give decoding, resizing and arrays, so the code is a port of the 90-line Python reference (`face_ref.py`) that the spike already compared with the models. Builds like `decode-rs` (`cargo build --release --locked`, `Cargo.lock` reviewed, out of git). With the pinned `ort` downloaded binaries ONNX Runtime is linked into the program, so there is no separate ORT DLL to ship. | A second build step and a second program in the installer. The `ort` crate is pre-release (`=2.0.0-rc.10` pinned, as Lap does). Pixels are not sent over the pipe, only paths, so the program parses a JPEG or PNG itself (§5.1 "Isolation"; it reads only what DigUp's sandboxed decode wrote in its own scratch folder). |
+  | D. OpenCV `FaceDetectorYN` and `FaceRecognizerSF` | These exact two models, alignment included | A large C++ dependency (tens of MB) not on this machine and not in the build. |
+  | E. A Python worker | The reference already exists | Python would have to ship in the installer. |
+
+  **Chosen: C.** It is the only option that gives process isolation, which the design requires, without hand-writing an image library, and the reference algorithm
+  ports one-to-one. Option A was rejected for the amount of hand-written code and the missing proof, B because it runs in the process it must not be able to crash.
+  The face program is one executable beside `digup`; Swift (`FaceWorker`, in `DigUpKit`) starts it, sends paths and reads vectors, exactly as `EmbeddingWorker` does for `digup worker`.
+  Checked against C: the toolchain (`cargo` is in `~/.cargo/bin`) and Lap's pinned `ort`, `ndarray` and `image` versions. Not checked: that the pinned `ort` binaries download and
+  link here, the program's size, its speed against the Python numbers (0.80 s per photo, see "Build status"), and the installer's growth. **If the `ort` crate cannot be built here, fall back to
+  option A** and record why.
 - **Alignment is part of the model.** SFace needs the face warped to 112 × 112 from YuNet's five landmarks with a fixed similarity
   transform. It must match the reference exactly, or scores shift. It is tested against reference vectors (like `ReferenceVectorTests`).
 - **Isolation:** the face step receives pixels that the sandboxed decode worker already produced. It parses no file format, so it adds
@@ -110,7 +131,7 @@ DigUp already builds Rust (`decode-rs`) and its shell is Rust, so this is now th
 - **Platforms:** Windows only in v1. On macOS the DigUp app uses Apple frameworks and has no ONNX Runtime in its build; Linux
   could share the Windows path but is untested.
 - **Models ship in the installer** (YuNet and SFace together are under 40 MB, which adds to a 54 MB installer **[verify the real growth]**),
-  with SHA-256 checks as `download-model` does for the Gemma files. They live in the models folder (`DIGUP_MODELS`).
+  with SHA-256 checks as `download-model` does for the Gemma files. They live in the models folder (`DIGUP_MODELS`); during development the four candidate files are in its `faces` subfolder, `D:\Users\rahul\AppData\Local\DigUp\Models\faces`.
 
 ### 5.2 Where the face step runs
 
@@ -170,8 +191,8 @@ clustering run there at background priority; the **search service** owns `person
 UI talks to it. Clustering never runs in the search service, which answers typing. After either side changes data the other is told to reload, as the shell
 already does for vectors (`reload`).
 
-**Embedding size:** SFace output is 128-d per OpenCV's documentation **[verify against the frame project's code]**, so 512 B per face
-at float32. About 1.65 faces per photo over ~49,000 photos is ~81,000 faces, roughly 40 MB. (An earlier draft assumed 512-d and 200 MB.)
+**Embedding size:** SFace output is 128-d (**checked** 2026-11-17: the `fc1` output of the frame project's `sface.onnx`, see "Models on this machine"), so 512 B per face
+at float32. (`w600k_mbf` is 512-d, so 2 KB per face and about four times this, roughly 160 MB, if it is chosen.) About 1.65 faces per photo over ~49,000 photos is ~81,000 faces, roughly 40 MB. (An earlier draft assumed 512-d and 200 MB.)
 
 **Face crops are not stored for every face.** The People view needs crops: it makes them on demand for a group's representative
 faces (about 12 per group) and caches them as small JPEGs in the `previews` folder, which "Delete all face data" also clears.
@@ -285,7 +306,7 @@ Problems an earlier draft had, and the design that fixes them:
 
 | # | Question | Pass |
 |---|---|---|
-| F1 | Do YuNet, alignment and SFace run through ONNX Runtime on Windows from the helper or a Rust crate, inside the installer? | Embeddings match the Python reference (cosine ≥ 0.98) on a fixed set; installer growth recorded |
+| F1 | Do YuNet, alignment and SFace run through ONNX Runtime on Windows from the helper or a Rust crate, inside the installer? *(Status 2026-11-17: the files are here and load in ONNX Runtime 1.32 from Python, shapes checked; no embedding has been compared to a reference yet, and nothing has run from Swift or Rust.)* | Embeddings match the Python reference (cosine ≥ 0.98) on a fixed set; installer growth recorded |
 | F2 | How long does the face step take per photo here, and so the backfill of the whole library? | Measured seconds per photo and total hours, written down |
 | F3 | Does SFace meet the §9 bar on this library? | The §9 numbers |
 | F4 | Is there a permissive stronger embedder, and does it beat SFace on the same sample? | Licence checked first, then §9 numbers |
@@ -363,7 +384,7 @@ or speed figures. "Lap does X" below is what the code shows.
 
 | Area | Lap | This design | Verdict |
 |---|---|---|---|
-| Detector | `det_500m` (SCRFD-style), input letterboxed to at most 640 px, confidence ≥ 0.65, NMS 0.4 | YuNet on the 1024 px prepared picture | Lap's 640 px cap loses more small faces; keep 1024 and test the detector's input size in F3 |
+| Detector | `det_500m` (SCRFD-style), input letterboxed to at most 640 px, confidence ≥ 0.65, NMS 0.4 | YuNet on the 1024 px prepared picture | Lap's 640 px cap loses more small faces; keep 1024 and test the detector's input size in F3. Note the YuNet we have is itself fixed at 640×640 (§4), so the cap applies to it too unless a larger export is found; `det_500m` is the one that takes 1024 |
 | Embedder | `w600k_mbf` MobileFaceNet, 512-d, L2-normalised | SFace, 128-d | Lap's is likely stronger; licence is the catch (§4). Candidate for F4 |
 | **Alignment** | **None.** Landmarks are never decoded (`landmarks: None`); the embedder gets the box plus 20% padding squeezed to 112 × 112 | Five-landmark alignment is required (§5.1) | Keep ours. ArcFace-style models expect aligned faces; skipping it hurts on turned heads, which this library has. Lap's score distributions should not be trusted as a benchmark |
 | Quality filter | Confidence, and **Laplacian variance ≥ 200 on the face box**; the minimum-size filters are commented out | Minimum size and sharpness (§5.2, §7) | Agree on sharpness. Its threshold depends on resolution, so calibrate on the 1024 px pictures, not copy 200 |
@@ -499,3 +520,62 @@ Fixed in a second review of this document (2026-11-17), mostly its own gaps and 
 25. **Search details:** multi-word names, possessives, accents, two people with one name, and the lookup cost. **Evaluation** now measures the person's naming effort and
     says what data may be committed.
 26. **Scope:** faces are scanned for kind `image` only.
+
+## Build status (2026-11-17)
+
+Built, in `Sources/DigUpKit/Faces/`, tested by `FaceTests` (30 tests, generated vectors, all pass; `swift test --filter FaceTests`):
+the store and its tables with per-process ownership (§6), the hard floor and thresholds in `meta` (§17 rows 6, 9, 23), scan state and
+retries (row 7), labels that re-attach after a rescan or wait in the review list (rows 11, 21), the correction operations with `op_log` undo
+(rows 2, 15, 17, 22), person ids the program never deletes (rows 1, 16), the core, matching with margin and flagging of `group` labels (§7),
+seeded clustering with the same-photo rule, minimum group by content key, cancel and an atomic write (rows 3, 4, 8, 19), albums with one entry
+per content key, folder removal that also clears the undo log (§11), and the name resolver (§8, row 13).
+
+Built since (2026-11-18): the face program `digup-faces` (Rust, `faces-rs/`, §5.1 option C), `FaceWorker` and `FaceStep` in Swift, the hook in
+`Indexer`, and the backfill in the index service (`--faces`). Checked against the Python reference on 171 photos: median cosine 0.9998,
+minimum 0.9743 (one face under the 0.98 bar), boxes within 3.76 px, no face missing. End to end, 171 scan rows (148 faces, 23 none) and 405
+faces in `faces.sqlite`. The helper not going idle after the backfill in that run was a loop bug, fixed the same day. Open: the prepared picture's orientation (row 12, since checked on the crops),
+and the ONNX Runtime cache on C: (about 617 MB).
+
+Built since (2026-11-18, later): grouping after the backfill (`FaceStep.regroup`), `digup faces` and the `faces_*` questions of
+`search-service`, the shell's People window (to name, add to a person, leave out, review face by face; people, rename, merge, photos, undo),
+and the Settings switch with "Delete all face data". On the 171 photos: five groups (86, 85, 60, 51, 46 faces), one person in each on a contact
+sheet, and the face crops right on EXIF-rotated photos (row 12 holds on this path). Not opened yet: the People window in a running shell.
+
+Search by person (2026-11-18): `search-service` limits a query to the photos of the people it names (§8); checked on five named people (counts equal
+their albums; name plus word is a subset of both). Not seen in the panel yet.
+
+Not built: the shell's face counts in the status line, the review list and the "not this person" button in the window,
+orientation tests (row 12), the grep test for threshold literals (row 9), and the evaluation (§9). Folder removal: when the index starts with its
+folder list (`--prune`), `FaceStep.prune` deletes the faces, scans, labels and rejections of photos outside those folders (review, 2026-11-18); a single
+photo that is deleted from disk inside a kept folder is not yet pruned, and the clustering has a cancel but no time budget.
+Not measured: accuracy on real faces, the clustering time at ~81,000 faces (all pairs, O(n²) in plain Swift; it may need blocking or a Rust
+implementation), and the content key's collision rate (F6). Per row 18, none of the rows above is called fixed in user-facing text yet.
+
+Decisions made while building, to confirm: similarities are cosines (higher is closer), so the thresholds are similarities, not Lap's distances;
+the starting values are `floorConfidence` 0.5, `floorPixels` 20, `usableConfidence` 0.7, `usablePixels` 40, matching 0.363, margin 0.05,
+clustering 0.45, all for F3 to settle; the album includes `auto` suggestions unless asked not to.
+
+### Models on this machine (2026-11-17)
+
+The four model files are in `D:\Users\rahul\AppData\Local\DigUp\Models\faces` (outside the repository): `yunet.onnx` and `sface.onnx` copied from the
+SmartPhotos frame app's assets (`packages/smart-photos/frame/app/src/main/assets`), `det_500m.onnx` and `w600k_mbf.onnx` copied from Lap's
+`src-tauri/resources/models`. Read with ONNX Runtime 1.32 (Python, CPU, in a throwaway environment at `D:\Temp\faces-venv`), which makes the shapes
+**checked**.
+
+| File | Bytes | SHA-256 | Input | Output |
+|---|---|---|---|---|
+| `yunet.onnx` | 232,589 | `8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4` | 1×3×640×640, **fixed** | scores, boxes and 5 landmarks at strides 8, 16, 32 |
+| `sface.onnx` | 38,696,353 | `0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79` | 1×3×112×112 | `fc1`, **128-d** |
+| `det_500m.onnx` | 2,524,817 | `5e4447f50245bbd7966bd6c0fa52938c61474a04ec7def48753668a9d8b4ea3a` | 1×3×H×W, any size | scores, boxes and 5 landmarks at strides 8, 16, 32 |
+| `w600k_mbf.onnx` | 13,616,099 | `9cc6e4a75f0e2bf0b1aed94578f144d15175f357bdc05e815e5c4a02b319eb4f` | N×3×112×112 | **512-d** |
+
+Licences checked 2026-11-18 against OpenCV Zoo's own files: YuNet MIT, SFace Apache 2.0, and the two files we use (`yunet.onnx`, `sface.onnx`) are byte-identical to the published ones (the SFace training data's terms are a separate question, not checked). Packaged in the installer (`scripts/fetch-face-models.sh`).
+
+### First run on real photos (2026-11-17, `scripts/test-photos`, 171 photos, git-ignored)
+
+Python reference (`face_ref.py`: YuNet letterboxed to 640, SFace, 5-point alignment) on pictures resized to 1024 px, CPU, one process. **Detection only: nobody has named
+anyone yet, so this says nothing about recognition accuracy.** 444 faces in 171 photos: 16 photos with none, 15 with one, 106 with two or three, 34 with four or more (most 9).
+Face width is a median 6.9% of the picture (10th percentile 2.2%, 90th 21%). By smaller side: 41 faces under 20 px, 67 at 20–40 px, 156 at 40–80 px, 180 at 80 px or more. Detector score:
+17 below 0.7, 47 from 0.7 to 0.85, 380 at 0.85 or more. Time per photo: 0.44 s decode and resize (PIL, not DigUp's decode), 0.10 s detect, 0.26 s align and embed (2.6 faces per photo), **0.80 s in all**.
+Joining faces from different photos at cosine ≥ 0.45 with plain single linkage gave one group of 372 and one of 51 out of 444: **chaining, as §7 predicts**, which is why Chinese Whispers is used and a
+threshold alone is not enough. The embeddings from this run are in the scratchpad only (biometric data, not in the repository).

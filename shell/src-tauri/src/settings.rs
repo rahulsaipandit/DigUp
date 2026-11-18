@@ -40,6 +40,9 @@ pub struct Settings {
     /// The model runs on the processor even where the graphics card measured faster (Settings → General): for a card
     /// whose results come back wrong or empty. The helpers get `DIGUP_DEVICE=cpu`.
     pub processor_only: bool,
+    /// DOWNSTREAM-FORK (2026-11-18): find the faces in photos and group them for the People window (Settings → General). Off until chosen:
+    /// faces are biometric data. The index helper gets `--faces`.
+    pub faces: bool,
     /// When DigUp last checked for updates (seconds since 1970).
     pub update_checked: u64,
 }

@@ -30,6 +30,8 @@ let usage = """
       digup search-service <folder>... [--code-root DIR]... [--encoder-idle S]
                                               the searcher as a process, index open and encoder warm (JSON lines;
                                               see SearchService): for shells that can't link DigUpKit
+      digup faces [status|group|groups|people|name <group> <name>|undo]
+                                              people in photos: group the faces found, name a group (see FacesCommand)
       digup download-model [--to DIR]         the model files, from the Hugging Face cache or downloaded with
                                               resume, checked (JSON lines: see DownloadModel)
 
@@ -421,9 +423,18 @@ func indexService(_ args: Arguments) throws -> Int32 {
     let model = SharedEmbedder {
         try makeEmbedder(textOnly: false, log: args.indexFolder.appendingPathComponent("worker.log"), qos: .utility)
     }
+    // DOWNSTREAM-FORK (2026-11-17): faces are off unless asked for (--faces: the person turned them on in Settings); see docs/person-recognition.md.
+    var faces: FaceStep?
+    if args.flags.contains("--faces") {
+        let (step, why) = FaceStep.locate(directory: args.indexFolder, models: ProcessInfo.processInfo.environment["DIGUP_MODELS"].map { URL(fileURLWithPath: $0) } ?? ModelFiles.installed,
+                                          helper: Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0]))
+        faces = step
+        if let why { emit(["event": "faces", "state": "unavailable", "why": why]) }
+    }
     func part(_ file: String, options: IndexOptions, roots: [URL]) throws -> IndexService.Part {
         let store = try IndexStore(directory: args.indexFolder, file: file)
         let indexer = try Indexer(store: store, options: options, makeEmbedder: { try model.embedder() })
+        if file == IndexStore.mainFile { indexer.faceStep = faces }
         indexer.costsFolder = args.indexFolder   // what indexing costs here, for later estimates
         // A new app version may bring a new model: the index starts over by itself (keyword search on names goes on).
         indexer.embedderSource = embedderSource()
@@ -448,6 +459,7 @@ func indexService(_ args: Arguments) throws -> Int32 {
                                code: codeRoots.isEmpty ? nil : try part(IndexStore.codeFile, options: codeOptions,
                                                                         roots: codeRoots),
                                folder: args.indexFolder,
+                               faces: faces,
                                model: model,
                                modelReady: { embedderSource() == nil || LlamaModels.complete },
                                backfill: args.flags.contains("--backfill"),
@@ -737,6 +749,8 @@ do {
     case "sandbox-remove": exit(SandboxCleanup.run(extraFolders: args.positional))
     case "search-service": exit(try searchService(args))
     case "download-model": exit(try downloadModel(args))
+    // DOWNSTREAM-FORK (2026-11-18): people in photos (FacesCommand.swift).
+    case "faces": exit(try facesCommand(args))
     default:
         print(usage)
         exit(2)

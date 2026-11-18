@@ -212,6 +212,9 @@ jobs:
           scripts/build-llama.sh
           # DOWNSTREAM-FORK (2026-11-17, security): the Rust readers that replace stb and miniz on Windows (decode-rs).
           scripts/build-decode-rs.sh
+          # DOWNSTREAM-FORK (2026-11-18): the face program (faces-rs), which the installer carries beside digup.exe.
+          scripts/build-faces-rs.sh
+          scripts/fetch-face-models.sh
           scripts/package-windows.sh
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
