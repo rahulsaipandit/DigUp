@@ -16,8 +16,15 @@ trap 'rm -rf "$work"' EXIT
 win() { cygpath -m "$1"; }
 
 echo "installing $setup"
-MSYS_NO_PATHCONV=1 "$setup" /S
-installed=$(cygpath -u "$LOCALAPPDATA")/DigUp
+# DOWNSTREAM-FORK (2026-11-18): INSTALL_DIR (a Windows path) installs somewhere else than the default, so a check on a machine that has DigUp
+# installed does not replace that install ("/D=" must be the last argument).
+if [[ -n "${INSTALL_DIR:-}" ]]; then
+  MSYS_NO_PATHCONV=1 "$setup" /S "/D=$INSTALL_DIR"
+  installed=$(cygpath -u "$INSTALL_DIR")
+else
+  MSYS_NO_PATHCONV=1 "$setup" /S
+  installed=$(cygpath -u "$LOCALAPPDATA")/DigUp
+fi
 ls "$installed/DigUp.exe" "$installed/helper/digup.exe" "$installed/helper/digup-faces.exe" "$installed/helper/faces/yunet.onnx" "$installed/helper/faces/sface.onnx" > /dev/null   # DOWNSTREAM-FORK (2026-11-18): and the face program
 # The licenses of what the installer carries, beside the app.
 grep -q "GNU LESSER GENERAL PUBLIC LICENSE" "$installed/THIRD-PARTY-NOTICES.txt" || { echo "no license notices"; exit 1; }
@@ -49,7 +56,7 @@ done
 for _ in $(seq 30); do kill -0 "$app" 2> /dev/null || break; sleep 2; done
 if kill -0 "$app" 2> /dev/null; then
   echo "DigUp didn't quit after its report: ending it"
-  taskkill //F //T //IM DigUp.exe > /dev/null || true
+  kill -9 "$app" 2> /dev/null || true   # this one only: DigUp's own copy may be running on this machine
 fi
 report=$(grep '^{' "$work/out.txt" | tail -1 || true)
 echo "after $(( $(date +%s) - started )) s"
