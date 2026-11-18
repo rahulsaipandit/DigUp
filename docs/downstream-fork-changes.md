@@ -9,6 +9,29 @@ Entry format: date and time (local), category, files, what changed, why, how it 
 
 ---
 
+## 2026-11-17 (PST, night) — Search helper is started with the current folders, not the ones at launch
+
+- **Category:** bug fix
+- **Files:** `shell/src-tauri/src/helper.rs` (`SearchService` takes a function that makes its `Launch`), `shell/src-tauri/src/main.rs`
+  (`Shell::search_launch`, used by `setup`).
+- **What changed:** the shell built the arguments for `digup search-service` (folders, excluded folders and types, code folders) once,
+  in `setup()`, and reused them every time it started the helper.
+- **Why:** the helper exits by itself when idle and the next request starts a new one. On a first run the shell starts with empty
+  settings (the setup wizard fills them in afterwards), so every helper started after the first idle exit had no folders and returned
+  no hits for any search ("man", "boy", "beach" showed nothing on a fully indexed folder). A running helper was told about folder
+  changes by the `folders` request, but a new one never was.
+- **Review fixes (same day):** `search_launch` now goes through `Shell::launch`, so the search helper gets the same environment as the
+  indexing one (`DIGUP_DEVICE=cpu` for "processor only", which `set_processor_only` relies on when it stops the search helper to be started
+  again; before, only `DIGUP_MODELS` was passed); the index and folder arguments are built in one place (`scope_arguments`) for both
+  helpers; and `SearchService::send` asks for the launch before it holds its `running` lock, not while (the closure reads the shell's
+  settings, and a panic there would have poisoned the lock).
+- **Checked:** reproduced by running `digup search-service --index …` with and without the folder (hits vs `"hits":[]`, `"strong":0`);
+  `cargo test` in `shell/src-tauri` passes (14 tests, compiled for the first time with this change). Not checked: the rebuilt app (not
+  rebuilt or reinstalled yet), and no Rust test of the restart path itself.
+- **On a sync:** keep `search_launch`; if upstream builds the launch once again, this returns.
+
+---
+
 ## 2026-11-17 (PST, night) — Shell reads DIGUP_INDEX and DIGUP_MODELS
 
 - **Category:** feature (storage location)
@@ -45,6 +68,25 @@ any arguments given, such as `--roots`. Not yet run: the installer was not insta
 
 Also fixed in `scripts/dev-run.bat`: `RC` was read with `%ERRORLEVEL%` inside the `if defined BUILD (...)` block, which expands when the
 block is parsed, so a failed build looked like success. It now checks `if errorlevel 1` right after `swift build`.
+
+---
+
+## 2026-11-17 (PST, late) — Sort the search window's results by date, size or name
+
+- **Category:** feature (Windows and Linux shell)
+- **Files:** `shell/ui/window.js` (`SORTS`, `sortedHits`, `strongHits`, `sortButton`, `setSort`), `shell/ui/window.css` (`.kinds .sort`),
+  `shell/tests/sort.test.cjs` (new).
+- **What changed:** a "Sort: Best match ▾" button at the right end of the kind chips, once there is more than one strong result. It opens
+  best match, date (newest or oldest first), size (largest or smallest first) and name (A to Z, Z to A). It sorts only the strong
+  results; the folded weaker ones stay in relevance order below them, and a tie keeps the search's order. Names sort without case or
+  accents and with numbers by value (img2 before img10). The choice lasts for the session, not across restarts. It needs no change to the
+  helper or the index: every hit already carries `modified`, `size` and `path`.
+- **Review fixes (same day):** the sorted list is made once per change of results or sort (not at every arrow key) with one collator; the
+  sort button is left out of the debug report's list of kinds; the test finds the code by `SORT-BEGIN` and `SORT-END` markers in
+  `window.js` and fails with a message if they or `nameOf` move.
+- **Checked:** 6 new Node tests of the real sort code (23 shell tests pass). **Not checked:** how it looks and behaves in the running window
+  (the shell was not run), the compact search panel (not changed), the Mac app (`SearchWindow.swift`, not changed).
+- **On a sync:** if upstream adds its own sort, drop this; the hooks are `strongHits()` in `rows()`, `grid()` and `codeList()`.
 
 ---
 

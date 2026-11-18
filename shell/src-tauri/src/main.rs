@@ -187,16 +187,33 @@ impl Shell {
         self.options.index_choice().iter().flat_map(|index| ["--index".to_string(), index.display().to_string()]).collect()
     }
 
+    /// DOWNSTREAM-FORK: which index and which folders the helpers are started for, as they are now: the one list both `search-service` and
+    /// `index-service` take after their own first arguments.
+    fn scope_arguments(&self) -> Vec<String> {
+        let settings = self.settings.lock().unwrap().clone();
+        let mut args = self.index_arguments();
+        args.extend(folder_arguments(&settings, &self.code_folders()));
+        args.extend(self.folders());
+        args
+    }
+
+    /// DOWNSTREAM-FORK: `search-service` for the folders as they are now (see `SearchService`). With the same environment as the indexing
+    /// helper (`helper_env`: the models, and "processor only"), which `set_processor_only` relies on when it stops this one to be started again.
+    fn search_launch(&self) -> Launch {
+        let mut args = vec!["search-service".to_string()];
+        args.extend(self.scope_arguments());
+        let mut launch = self.launch(args, "search.log");
+        launch.background = false;   // it answers typing
+        launch
+    }
+
     /// `index-service` for the folders as they are now.
     fn index_launch(&self) -> Launch {
-        let settings = self.settings.lock().unwrap().clone();
         let mut args = vec!["index-service".to_string(), "--backfill".to_string()];
         if self.prune.swap(false, Ordering::SeqCst) {
             args.push("--prune".into());
         }
-        args.extend(self.index_arguments());
-        args.extend(folder_arguments(&settings, &self.code_folders()));
-        args.extend(self.folders());
+        args.extend(self.scope_arguments());
         self.launch(args, "index.log")
     }
 
@@ -711,28 +728,12 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
         None => app.path().app_config_dir()?.join("settings.json"),
     };
     let settings = Settings::load(&settings_path);
-    let roots: Vec<String> = if options.roots.is_empty() {
-        settings.folders.clone()
-    } else {
-        options.roots.iter().map(|root| root.display().to_string()).collect()
-    };
-    let code_folders: Vec<String> = if options.code_roots.is_empty() {
-        settings.code_folders.clone()
-    } else {
-        options.code_roots.iter().map(|root| root.display().to_string()).collect()
-    };
-    let mut search_args = vec!["search-service".to_string()];
-    // DOWNSTREAM-FORK: `index_choice` also honors DIGUP_INDEX.
-    search_args.extend(options.index_choice().iter().flat_map(|index| ["--index".to_string(), index.display().to_string()]));
-    search_args.extend(folder_arguments(&settings, &code_folders));
-    search_args.extend(roots);
+    // DOWNSTREAM-FORK: the launch is built at every start of the helper, from the folders and settings as they are then
+    // (it exits when idle and the next request starts another), not once here.
     let search = SearchService::new(
-        Launch {
-            program: options.helper.clone(),
-            args: search_args,
-            env: options.models.iter().map(|models| ("DIGUP_MODELS".to_string(), models.display().to_string())).collect(),
-            log: Some(logs.join("search.log")),
-            background: false,   // it answers typing
+        {
+            let app = handle.clone();
+            move || app.state::<Arc<Shell>>().search_launch()
         },
         {
             let app = handle.clone();

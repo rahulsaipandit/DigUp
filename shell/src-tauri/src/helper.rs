@@ -113,7 +113,9 @@ fn reap(child: &mut Child) -> Option<i32> {
 
 /// `digup search-service`: started on the first request, and again after it died.
 pub struct SearchService {
-    launch: Launch,
+    /// DOWNSTREAM-FORK: asked at every start, not once at launch. The helper exits when idle and the next request starts
+    /// another; one started from the folders as they were at launch (none, on a first run) searched nothing.
+    launch: Arc<dyn Fn() -> Launch + Send + Sync>,
     running: Arc<Mutex<Option<Searching>>>,
     next_id: AtomicU64,
     on_event: EventSink,
@@ -128,9 +130,9 @@ struct Searching {
 }
 
 impl SearchService {
-    pub fn new(launch: Launch, on_event: impl Fn(Value) + Send + Sync + 'static) -> SearchService {
+    pub fn new(launch: impl Fn() -> Launch + Send + Sync + 'static, on_event: impl Fn(Value) + Send + Sync + 'static) -> SearchService {
         SearchService {
-            launch,
+            launch: Arc::new(launch),
             running: Arc::default(),
             next_id: AtomicU64::new(1),
             on_event: Arc::new(on_event),
@@ -150,14 +152,23 @@ impl SearchService {
     }
 
     fn send(&self, id: u64, request: &Value) -> Result<oneshot::Receiver<Value>, String> {
-        let mut running = self.running.lock().unwrap();
-        if let Some(searching) = running.as_mut() {
-            if !matches!(searching.child.try_wait(), Ok(None)) {
-                *running = None;
+        // DOWNSTREAM-FORK: the launch is asked for before `running` is held, not while: it reads the shell's settings and folders, and a
+        // lock taken there while this one is held could wait for a thread that is waiting for this one.
+        let launch = {
+            let mut running = self.running.lock().unwrap();
+            if let Some(searching) = running.as_mut() {
+                if !matches!(searching.child.try_wait(), Ok(None)) {
+                    *running = None;
+                }
             }
+            running.is_none()
         }
+        .then(|| (self.launch)());
+        let mut running = self.running.lock().unwrap();
         if running.is_none() {
-            *running = Some(self.start()?);
+            // Another request may have started it meanwhile (then `launch` is not used), or it may have stopped since the check above
+            // (then there is none, and it is asked for now).
+            *running = Some(self.start(launch.unwrap_or_else(|| (self.launch)()))?);
         }
         let searching = running.as_mut().unwrap();
         let (sender, receiver) = oneshot::channel();
@@ -170,8 +181,8 @@ impl SearchService {
         Ok(receiver)
     }
 
-    fn start(&self) -> Result<Searching, String> {
-        let (child, stdin, stdout) = self.launch.spawn()?;
+    fn start(&self, launch: Launch) -> Result<Searching, String> {
+        let (child, stdin, stdout) = launch.spawn()?;
         let number = STARTED.fetch_add(1, Ordering::Relaxed);
         let pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Value>>>> = Arc::default();
         let (replies, on_event, slot) = (pending.clone(), self.on_event.clone(), self.running.clone());

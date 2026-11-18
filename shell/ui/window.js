@@ -34,7 +34,8 @@ const state = {
   query: "",
   filter: null,         // a FILTERS key, "code", or null for everything
   text: "",             // what was searched (without "code:")
-  ranked: [],           // the strong results, best first
+  ranked: [],           // the strong results, best first (what `strongHits()` re-orders for the chosen sort)
+  sort: "best",         // a SORTS key: kept for the session, whatever is searched
   weaker: [],           // below half the best one's score: folded
   counts: {},           // strong results of each filter for the query, whatever the filter (the chips' numbers)
   meaning: true,        // the results matched by meaning too (false: words only)
@@ -53,6 +54,44 @@ const state = {
   indexed: null,        // files indexed of each kind (the home)
 };
 let debugPending = false;
+
+/// DOWNSTREAM-FORK (2026-11-17): the orders the strong results can be put in. "best" is the search's own (relevance); the others use
+/// what every result already carries (its modified date, its size, its file name). The weaker results, folded below, keep relevance.
+// SORT-BEGIN (shell/tests/sort.test.cjs runs what is between this line and SORT-END)
+const SORTS = [
+  { key: "best", title: "Best match", label: "Best match" },
+  { key: "newest", title: "Date, newest first", label: "Newest", compare: (a, b) => (b.modified || 0) - (a.modified || 0) },
+  { key: "oldest", title: "Date, oldest first", label: "Oldest", compare: (a, b) => (a.modified || 0) - (b.modified || 0) },
+  { key: "largest", title: "Size, largest first", label: "Largest", compare: (a, b) => (b.size || 0) - (a.size || 0) },
+  { key: "smallest", title: "Size, smallest first", label: "Smallest", compare: (a, b) => (a.size || 0) - (b.size || 0) },
+  { key: "name-az", title: "Name, A to Z", label: "Name A–Z", compare: (a, b) => byName(a, b) },
+  { key: "name-za", title: "Name, Z to A", label: "Name Z–A", compare: (a, b) => byName(b, a) },
+];
+
+/// File names as a person reads them: not case-sensitive, accents ignored, "img2" before "img10". One collator, made once: building
+/// one for every comparison is what `localeCompare` with options does.
+const NAME_ORDER = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+function byName(a, b) {
+  return NAME_ORDER.compare(nameOf(a.path), nameOf(b.path));
+}
+
+/// `hits` in the order `key` names. A tie keeps the search's order, so the best match of two files of one size is first.
+function sortedHits(hits, key) {
+  const compare = SORTS.find((sort) => sort.key === key)?.compare;
+  if (!compare) return hits;
+  return hits.map((hit, index) => [hit, index]).sort((a, b) => compare(a[0], b[0]) || a[1] - b[1]).map(([hit]) => hit);
+}
+
+/// The strong results as shown: in the chosen order. Sorted again only when the results or the sort change (the arrow keys ask for
+/// the rows at every press).
+let sortedMemo = { ranked: null, sort: null, hits: [] };
+function strongHits() {
+  if (sortedMemo.ranked !== state.ranked || sortedMemo.sort !== state.sort) {
+    sortedMemo = { ranked: state.ranked, sort: state.sort, hits: sortedHits(state.ranked, state.sort) };
+  }
+  return sortedMemo.hits;
+}
+// SORT-END
 
 // MARK: Searching
 
@@ -136,7 +175,7 @@ function setFilter(key) {
 
 /// Every result shown, in order: the strong ones, then the weaker ones once they're unfolded.
 function rows() {
-  return [...state.ranked, ...(state.showWeaker ? state.weaker : [])];
+  return [...strongHits(), ...(state.showWeaker ? state.weaker : [])];
 }
 
 function selectedHit() {
@@ -171,6 +210,33 @@ function renderBar() {
     $kinds.append(chip("Code", "code", code ? state.counts.code : null, code,
                        () => setFilter(state.filter === "code" ? null : "code"), 7));
   }
+  if (sortable()) $kinds.append(sortButton());
+}
+
+/// Whether there is an order to choose: results are showing, and more than one of them is strong.
+function sortable() {
+  return state.hasResults && state.query.trim() !== "" && !state.codePhase && state.ranked.length > 1;
+}
+
+/// "Sort: Best match ▾" at the right end of the chips: opens the orders. Highlighted when it is not the search's own.
+function sortButton() {
+  const current = SORTS.find((sort) => sort.key === state.sort) ?? SORTS[0];
+  const button = element("button", "chip sort" + (current.key === "best" ? "" : " selected"), `Sort: ${current.label} ▾`);
+  button.title = "Sort the best matches by date, size or name";
+  button.setAttribute("aria-haspopup", "menu");
+  button.onclick = () => {
+    const box = button.getBoundingClientRect();
+    showMenu(box.right - 190, box.bottom + 4, SORTS.map((sort) => [sort.title, () => setSort(sort.key),
+                                                                   sort.key === state.sort ? "✓" : null]));
+  };
+  return button;
+}
+
+function setSort(key) {
+  if (key === state.sort) return;
+  state.sort = key;
+  render();   // the selection is a path, so it stays on the same result wherever that lands
+  $content.querySelector(".cell.selected, .row.selected")?.scrollIntoView({ block: "nearest" });
 }
 
 /// All · Screenshots 4 · Images 9 · …: what the query found of each kind; a click shows only that kind.
@@ -200,7 +266,7 @@ function renderContent() {
 
 function grid() {
   const box = element("div");
-  box.append(cells(state.ranked, "grid"));
+  box.append(cells(strongHits(), "grid"));
   if (state.weaker.length) {
     box.append(weakerToggle());
     if (state.showWeaker) box.append(cells(state.weaker, "grid weaker-results"));
@@ -308,7 +374,7 @@ function weakerToggle() {
 /// Code results, one under another: the file, where in its repo, the lines that matched.
 function codeList() {
   const box = element("div", "code-list");
-  for (const hit of state.ranked) box.append(codeRow(hit));
+  for (const hit of strongHits()) box.append(codeRow(hit));
   if (state.weaker.length) {
     box.append(weakerToggle());
     if (state.showWeaker) for (const hit of state.weaker) box.append(codeRow(hit, true));
@@ -1189,8 +1255,9 @@ function report() {
         window: true,
         query: $query.value,
         filter: state.filter,
-        kinds: [...$kinds.querySelectorAll(".chip")].map((chip) => chip.textContent + (chip.classList.contains("selected") ? " (selected)" : "")),
-        results: state.ranked.map((hit) => nameOf(hit.path)),
+        kinds: [...$kinds.querySelectorAll(".chip:not(.sort)")].map((chip) => chip.textContent + (chip.classList.contains("selected") ? " (selected)" : "")),
+        sort: state.sort,
+        results: strongHits().map((hit) => nameOf(hit.path)),
         weaker: state.weaker.length,
         columns: columns(),
         selected: state.selection && nameOf(state.selection),

@@ -155,6 +155,7 @@ svg { display: block; }
 .chip svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
 .chip .number { opacity: 0.6; font-variant-numeric: tabular-nums; }
 .chip.selected { background: var(--accent); color: white; }
+.kinds .sort { margin-left: auto; }
 .kinds .divider { width: 1px; height: 16px; margin: 0 4px; background: var(--line); }
 
 /* Results and the preview beside them */
