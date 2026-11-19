@@ -281,7 +281,8 @@ fn folder_arguments(settings: &Settings, code_folders: &[String]) -> Vec<String>
 async fn ask(shell: State<'_, Arc<Shell>>, request: Value) -> Result<Value, String> {
     let op = request.get("op").and_then(Value::as_str).unwrap_or_default();
     // DOWNSTREAM-FORK (2026-11-18): the People window's questions (`faces_*`, answered by search-service's face store).
-    if !["search", "embed_ahead", "text", "render", "prewarm", "status", "summaries", "failures"].contains(&op) && !op.starts_with("faces_") {
+    // DOWNSTREAM-FORK (2026-11-19): `unread_files` lists the files behind a count in Settings → Folders → why.
+    if !["search", "embed_ahead", "text", "render", "prewarm", "status", "summaries", "failures", "unread_files"].contains(&op) && !op.starts_with("faces_") {
         return Err(format!("not a question the panel asks: {op}"));
     }
     shell.search.ask(request).await

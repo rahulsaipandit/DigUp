@@ -40,4 +40,42 @@ import Testing
         #expect(report.leftOut[folder.path]?["inside a code project"] == 1)
         #expect(report.leftOut[folder.path]?["code or data file"] == 2)   // the two package.json files
     }
+
+    // DOWNSTREAM-FORK (2026-11-19): the files behind the counts of "why" in Settings → Folders.
+    @Test func theFilesLeftOutAreListedWhenAsked() throws {
+        try write("package.json", "{}")
+        try write("app/package.json", "{}")
+        try write("notes.md", "notes")
+        try write("data.xyz")                      // a type DigUp doesn't read
+        try write("more/other.xyz")
+        // Not asked: the counts only, as before.
+        let plain = Crawler.crawl([folder], options: IndexOptions())
+        #expect(plain.leftOutFiles.isEmpty)
+        #expect(plain.leftOut[folder.path]?["other type"] == 2)
+        // Asked: the same counts, and each file under its reason.
+        let listed = Crawler.crawl([folder], options: IndexOptions(), collectPaths: 10)
+        #expect(listed.leftOut == plain.leftOut)
+        let others = (listed.leftOutFiles[folder.path]?["other type"] ?? []).map { String($0.dropFirst(folder.path.count + 1)) }.sorted()
+        #expect(others == ["data.xyz", "more/other.xyz"])
+        #expect(listed.leftOutFiles[folder.path]?["code or data file"]?.count == 2)
+    }
+
+    @Test func theListOfLeftOutFilesIsCappedButTheCountIsNot() throws {
+        for number in 1...5 { try write("file\(number).xyz") }
+        let report = Crawler.crawl([folder], options: IndexOptions(), collectPaths: 3)
+        #expect(report.leftOut[folder.path]?["other type"] == 5)
+        #expect(report.leftOutFiles[folder.path]?["other type"]?.count == 3)
+    }
+
+    @Test func aSkippedFolderIsListedUnderItsReason() throws {
+        try write("keep.md", "x")
+        let skipped = folder.appendingPathComponent("skip-me")
+        try write("skip-me/inner.md", "x")
+        var options = IndexOptions()
+        options.excludedFolders = [skipped.path]
+        let report = Crawler.crawl([folder], options: options, collectPaths: 10)
+        let key = report.leftOut[folder.path]?.keys.first { $0.hasPrefix("folders ") }
+        #expect(key != nil)
+        #expect(key.flatMap { report.leftOutFiles[folder.path]?[$0] }?.count == 1)
+    }
 }

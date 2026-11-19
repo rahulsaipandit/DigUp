@@ -18,8 +18,19 @@ pub enum Activity {
     Failed(String),
 }
 
+/// DOWNSTREAM-FORK (2026-11-18): finding faces in photos (the helper's `faces` events), shown after the indexing line while it runs.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Faces {
+    /// `done` of `total` photos looked at in this pass (the helper stops it for a new sync and starts it again after).
+    Scanning { done: u64, total: u64 },
+    /// The face program can't run: the files stay indexed and searchable.
+    Unavailable,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Status {
+    /// Finding faces, when it is turned on and under way (None otherwise).
+    pub faces: Option<Faces>,
     pub activity: Activity,
     /// Files in the index, in any state.
     pub files: u64,
@@ -56,8 +67,17 @@ impl Status {
             self.unfinished = count("unfinished");
         }
         match event["event"].as_str().unwrap_or_default() {
+            "faces" => match event["state"].as_str() {
+                Some("scanning") => self.faces = Some(Faces::Scanning { done: count("done"), total: count("total") }),
+                Some("unavailable") => self.faces = Some(Faces::Unavailable),
+                Some("done") => self.faces = None,   // "grouped" changes nothing here
+                _ => {}
+            },
             "scanning" if !matches!(self.activity, Activity::Failed(_)) => self.activity = Activity::Scanning,
-            "sync" if count("new") > 0 => self.activity = Activity::Indexing { done: 0, total: count("new") },
+            "sync" if count("new") > 0 => {
+                self.faces = None;
+                self.activity = Activity::Indexing { done: 0, total: count("new") }
+            }
             "sync" if event["left_out"].is_object() => {
                 self.left_out = event["left_out"].clone();
                 if matches!(self.activity, Activity::Scanning) { self.activity = Activity::Idle; }
@@ -65,6 +85,7 @@ impl Status {
             // A sync after a failure, or after a scan: the helper works again, or has found nothing new.
             "sync" if matches!(self.activity, Activity::Failed(_) | Activity::Scanning) => self.activity = Activity::Idle,
             "file" => {
+                self.faces = None;   // the faces wait until the index is up to date again
                 self.activity = Activity::Indexing { done: count("done"), total: count("total") };
                 // The counts come with a sync; each file read since leaves "waiting".
                 self.pending = self.pending.saturating_sub(1);
@@ -86,6 +107,7 @@ impl Status {
             "error" if event["fatal"] == true => self.activity = Activity::Failed("Indexing stopped".into()),
             // The helper is gone: whatever it was doing is over.
             "exit" | "ended" => {
+                self.faces = None;
                 if matches!(self.activity, Activity::Starting | Activity::Scanning | Activity::Indexing { .. } | Activity::Finishing { .. }) {
                     self.activity = Activity::Idle;
                 }
@@ -96,6 +118,17 @@ impl Status {
 
     /// One line for the tray and the window: "Indexing 42% · 120 of 306", "306 files indexed".
     pub fn line(&self, has_folders: bool, model: &Value) -> String {
+        let line = self.index_line(has_folders, model);
+        // DOWNSTREAM-FORK (2026-11-18): finding faces comes after the files are indexed, so it is added to the quiet line only.
+        match (&self.faces, &self.activity) {
+            (Some(Faces::Scanning { done, total }), Activity::Idle) if *total > 0 && !line.starts_with('⚠') && self.pending == 0 =>
+                format!("{line} · Finding faces {}% · {} of {}", percent(*done, *total), number(*done), number(*total)),
+            (Some(Faces::Unavailable), Activity::Idle) if self.pending == 0 => format!("{line} · Faces unavailable"),
+            _ => line,
+        }
+    }
+
+    fn index_line(&self, has_folders: bool, model: &Value) -> String {
         if !has_folders {
             return "No folders chosen yet".into();
         }
@@ -204,6 +237,11 @@ impl Status {
             "searchable": self.searchable,
             "pending": self.pending,
             "unfinished": self.unfinished,
+            "faces": match &self.faces {
+                Some(Faces::Scanning { done, total }) => json!({"state": "scanning", "done": done, "total": total}),
+                Some(Faces::Unavailable) => json!({"state": "unavailable"}),
+                None => Value::Null,
+            },
             "measuring": self.measuring,
             "paused": self.paused,
             "heldUntil": self.held_until,
@@ -289,6 +327,22 @@ mod tests {
         assert_eq!(status.caveat(&ready), None);
         status.apply(&json!({"event": "error", "message": "worker died", "fatal": true}));
         assert_eq!(status.line(true, &ready), "⚠︎ Indexing stopped");
+
+        // DOWNSTREAM-FORK (2026-11-18): finding faces shows after the quiet line, and goes when files need reading again.
+        let mut faces = Status::default();
+        faces.apply(&json!({"event": "idle", "files": 100, "searchable": 100, "pending": 0, "unfinished": 0}));
+        faces.apply(&json!({"event": "faces", "state": "scanning", "done": 250, "total": 1000}));
+        assert_eq!(faces.line(true, &ready), "100 files indexed · Finding faces 25% · 250 of 1,000");
+        faces.apply(&json!({"event": "faces", "state": "grouped", "groups": 3}));
+        assert_eq!(faces.line(true, &ready), "100 files indexed · Finding faces 25% · 250 of 1,000");
+        faces.apply(&json!({"event": "faces", "state": "unavailable", "why": "missing"}));
+        assert_eq!(faces.line(true, &ready), "100 files indexed · Faces unavailable");
+        faces.apply(&json!({"event": "faces", "state": "scanning", "done": 1, "total": 2}));
+        faces.apply(&json!({"event": "sync", "new": 5, "files": 105, "searchable": 100, "pending": 5}));
+        assert_eq!(faces.line(true, &ready), "Indexing 0% · 0 of 5");
+        faces.apply(&json!({"event": "faces", "state": "scanning", "done": 1, "total": 2}));
+        faces.apply(&json!({"event": "faces", "state": "done", "scanned": 2}));
+        assert_eq!(faces.faces, None);
 
         let mut held = Status { held_until: Some("01:00".into()), ..Status::default() };
         held.apply(&json!({"event": "counts", "files": 70, "searchable": 66, "pending": 4, "unfinished": 0}));

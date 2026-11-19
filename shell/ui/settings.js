@@ -299,8 +299,9 @@ function renderFields() {
 
 /// A folder searched (with `code`, a code folder): its name, where it is, what's in it, how much of it is indexed, and
 /// Remove.
-/// One line per reason: what the crawl never queued from the folder, then what was skipped once read.
-function reasonLines(leftOut, skippedReasons) {
+/// One entry per reason: what the crawl never queued from the folder, then what was skipped once read. `from` says where the
+/// helper finds the files behind the count ("crawl": it walks the folder again; "index": it asks the index).
+function reasonEntries(leftOut, skippedReasons) {
   const crawl = {
     "other type": "of types DigUp doesn't read",
     "app or bundle": "inside apps or bundles",
@@ -313,10 +314,73 @@ function reasonLines(leftOut, skippedReasons) {
     "excluded type": "of the file types you skip",
   };
   const byCount = (a, b) => b[1] - a[1];
-  const left = Object.entries(leftOut).sort(byCount).map(([reason, count]) =>
-    reason.startsWith("folders ") ? `${count.toLocaleString()} folders weren't opened (${reason.slice(8)})` : `${count.toLocaleString()} ${crawl[reason] || reason}`);
-  const skipped = Object.entries(skippedReasons).sort(byCount).map(([reason, count]) => `${count.toLocaleString()} skipped: ${reason}`);
+  const left = Object.entries(leftOut).sort(byCount).map(([reason, count]) => ({
+    reason, from: "crawl",
+    text: reason.startsWith("folders ") ? `${count.toLocaleString()} folders weren't opened (${reason.slice(8)})` : `${count.toLocaleString()} ${crawl[reason] || reason}`,
+  }));
+  const skipped = Object.entries(skippedReasons).sort(byCount).map(([reason, count]) => ({
+    reason, from: "index", text: `${count.toLocaleString()} skipped: ${reason}`,
+  }));
   return left.concat(skipped);
+}
+
+// DOWNSTREAM-FORK (2026-11-19): a "files" link on each reason of "why" that lists the paths behind its count, to check them.
+const REASON_FILES_LIMIT = 2000;
+
+function reasonRow(folder, entry) {
+  const row = element("div", "reason-row");
+  const head = element("div", "reason-head");
+  head.append(element("span", null, entry.text));
+  const show = element("button", "why", "files");
+  show.title = "List the files behind this count";
+  head.append(" ", show);
+  const files = element("div", "reason-files");
+  files.hidden = true;
+  let loaded = false;
+  show.onclick = async () => {
+    files.hidden = !files.hidden;
+    if (files.hidden || loaded) return;
+    files.replaceChildren(element("div", "note", "Looking…"));
+    try {
+      const reply = await ask({ op: "unread_files", root: folder, reason: entry.reason, from: entry.from, limit: REASON_FILES_LIMIT });
+      loaded = true;
+      renderReasonFiles(files, reply);
+    } catch (error) {
+      files.replaceChildren(element("div", "note", `Couldn't list them: ${error}`));
+    }
+  };
+  row.append(head, files);
+  return row;
+}
+
+function renderReasonFiles(box, reply) {
+  const paths = (reply.files || []).map((file) => file.path);
+  if (!paths.length) {
+    box.replaceChildren(element("div", "note", "None found: the folder has changed since the count was made."));
+    return;
+  }
+  const total = reply.total || paths.length;
+  const bar = element("div", "note");
+  bar.append(reply.truncated ? `The first ${paths.length.toLocaleString()} of ${total.toLocaleString()}. ` : `${paths.length.toLocaleString()} ${paths.length === 1 ? "path" : "paths"}. `);
+  const copy = element("button", "why", "Copy the paths");
+  copy.onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(paths.join("\n"));
+      copy.textContent = "Copied";
+    } catch (error) {
+      copy.textContent = "Couldn't copy";
+    }
+    setTimeout(() => { copy.textContent = "Copy the paths"; }, 2000);
+  };
+  bar.append(copy);
+  const list = element("div", "reason-paths");
+  for (const path of paths) {
+    const line = element("button", "reason-path", shown(path));
+    line.title = `${path}\n${isWindows ? "Show in Explorer" : "Show in Files"}`;
+    line.onclick = () => invoke("reveal", { path }).catch(fail);
+    list.append(line);
+  }
+  box.replaceChildren(bar, list);
 }
 
 function folderRow(folder, summary, code = false) {
@@ -343,13 +407,13 @@ function folderRow(folder, summary, code = false) {
     ].filter(Boolean).join(" · ");
     if (states) {
       const line = element("div", "states", states);
-      const reasons = reasonLines(leftOut, summary.skipped_reasons || {});
+      const reasons = reasonEntries(leftOut, summary.skipped_reasons || {});
       if (reasons.length) {
         const why = element("button", "why", "why");
         why.title = "Why some files aren't searchable";
         const list = element("div", "reasons");
         list.hidden = true;
-        for (const reason of reasons) list.append(element("div", null, reason));
+        for (const reason of reasons) list.append(reasonRow(folder, reason));
         why.onclick = () => { list.hidden = !list.hidden; };
         line.append(" ", why);
         text.append(list);

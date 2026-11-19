@@ -147,9 +147,12 @@ public final class FaceStep {
     /// The backfill: images the main index holds that have no up-to-date face scan, newest first, prepared again (sandboxed decode, 1024 px)
     /// and scanned 8 at a time. Resumable, since each file's scan row is its own record: stopping loses nothing and the next run goes on.
     /// `shouldStop` is asked between batches. Returns how many pictures it went through.
+    /// DOWNSTREAM-FORK (2026-11-18, review): the faces are grouped while the scan goes on (after 200 pictures, then each time the number scanned has
+    /// doubled), so a person with a library of tens of thousands of photos sees groups to name within minutes, not after the last picture;
+    /// `grouped` gets the number of groups each time.
     @discardableResult
     public func backfill(_ files: [FileRecord], minSide: Int, shouldStop: () -> Bool = { false },
-                         progress: (Int, Int) -> Void = { _, _ in }) -> Int {
+                         progress: (Int, Int) -> Void = { _, _ in }, grouped: (Int) -> Void = { _ in }) -> Int {
         guard let store = try? openStore() else { return 0 }   // the program starts with the first picture, not before
         let waiting = files.filter { $0.kind == .image && $0.state == "done" }
             .sorted { $0.mtime > $1.mtime }
@@ -186,6 +189,7 @@ public final class FaceStep {
             for file in batch { try? FileManager.default.removeItem(at: scratch.appendingPathComponent("\(file.id)")) }
             done += batch.count
             progress(done, waiting.count)
+            if started, scanned - max(groupedAt, 0) >= max(200, groupedAt), !shouldStop(), let groups = regroup(shouldStop: shouldStop) { grouped(groups) }
             if !started { break }   // the face program does not start: the rest would be decoded for nothing, and the next pass tries again
         }
         return done

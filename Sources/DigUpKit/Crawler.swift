@@ -18,6 +18,10 @@ public struct CrawlReport: Sendable {
     /// What each chosen folder left out, by reason (the same counts as `skipped`, split by folder), so the apps can
     /// say why a folder shows fewer files than it holds.
     public var leftOut: [String: [String: Int]] = [:]
+    /// DOWNSTREAM-FORK (2026-11-19): with `collectPaths` set on the crawl, the files (for "folders …" reasons, the folders) each
+    /// chosen folder left out, by reason, up to that many per reason. The counts above stay complete; this is for listing
+    /// the files behind a count (Settings → Folders → why → files).
+    public var leftOutFiles: [String: [String: [String]]] = [:]
 }
 
 /// Entries checked during a folder walk, including files that may later be skipped.
@@ -42,7 +46,7 @@ public enum Crawler {
     /// gone, says no). Opening is enough: listing a cloud folder's top level could take a while.
     public static func canList(_ url: URL) -> Bool { FileSystem.canList(url.path) }
 
-    public static func crawl(_ roots: [URL], options: IndexOptions,
+    public static func crawl(_ roots: [URL], options: IndexOptions, collectPaths: Int = 0,
                              progress: ((CrawlProgress) -> Void)? = nil) -> CrawlReport {
         let fm = FileManager.default
         let home = fm.homeDirectoryForCurrentUser.path
@@ -53,9 +57,15 @@ public enum Crawler {
         var found: [Candidate] = []
         var foundRoot: [String: String] = [:]   // path → the chosen folder it was found under (a folder inside
                                                 // another root would be walked twice)
-        func leftOut(_ reason: String, under root: String) {
+        // DOWNSTREAM-FORK (2026-11-19): remembers where a left-out file or folder is, up to `collectPaths` for each reason.
+        func remember(_ path: String, _ reason: String, under root: String) {
+            guard collectPaths > 0, (report.leftOutFiles[root]?[reason]?.count ?? 0) < collectPaths else { return }
+            report.leftOutFiles[root, default: [:]][reason, default: []].append(path)
+        }
+        func leftOut(_ reason: String, under root: String, path: String) {
             report.skipped[reason, default: 0] += 1
             report.leftOut[root, default: [:]][reason, default: 0] += 1
+            remember(path, reason, under: root)
         }
         let rootPaths = Set(roots.map { $0.standardizedFileURL.path })
         var checked = 0
@@ -102,6 +112,7 @@ public enum Crawler {
                         walker.skipDescendants()
                         report.skippedFolders[reason, default: 0] += 1
                         report.leftOut[root.path, default: [:]]["folders " + reason, default: 0] += 1
+                        remember(url.path, "folders " + reason, under: root.path)
                     } else if options.code {
                         repos.enter(url.path)
                     } else if Rules.isProjectRoot(url.path) {
@@ -112,24 +123,24 @@ public enum Crawler {
                 if isPackage {
                     walker.skipDescendants()   // macOS's enumerator never enters one; elsewhere it would
                     let library = ["photoslibrary", "photolibrary"].contains(url.pathExtension.lowercased())
-                    leftOut(library ? "Photos library" : "app or bundle", under: root.path)
+                    leftOut(library ? "Photos library" : "app or bundle", under: root.path, path: url.path)
                     return
                 }
                 let classification = options.code ? Rules.classifyCode(url, options: options)
                     : Rules.classify(url, values: values, options: options)
                 switch classification {
                 case .ignore:
-                    leftOut("other type", under: root.path)
+                    leftOut("other type", under: root.path, path: url.path)
                 case .skip(let reason):
-                    leftOut(reason, under: root.path)
+                    leftOut(reason, under: root.path, path: url.path)
                 case .index(let kind):
                     guard let info = FileSystem.info(of: url.path), info.isRegular else {
-                        leftOut("link or special file", under: root.path)
+                        leftOut("link or special file", under: root.path, path: url.path)
                         return
                     }
                     // Reading a dataless placeholder (iCloud "Optimize Mac Storage", File Providers) downloads it.
                     if info.dataless {
-                        leftOut("in the cloud, not downloaded", under: root.path)
+                        leftOut("in the cloud, not downloaded", under: root.path, path: url.path)
                         return
                     }
                     if options.code {
@@ -137,11 +148,11 @@ public enum Crawler {
                         let limit = url.pathExtension.lowercased() == "ipynb" ? options.maxNotebookBytes
                             : options.maxCodeBytes
                         if info.size > limit {
-                            leftOut("too big to be written by hand", under: root.path)
+                            leftOut("too big to be written by hand", under: root.path, path: url.path)
                             return
                         }
                         if repos.ignores(url.path) {
-                            leftOut("ignored by git", under: root.path)
+                            leftOut("ignored by git", under: root.path, path: url.path)
                             return
                         }
                     }
@@ -181,7 +192,7 @@ public enum Crawler {
         var kept: [Candidate] = []
         for file in found {
             if !options.code, file.kind != .screenshot, isInProject((file.path as NSString).deletingLastPathComponent) {
-                leftOut("inside a code project", under: foundRoot[file.path] ?? "")
+                leftOut("inside a code project", under: foundRoot[file.path] ?? "", path: file.path)
             } else {
                 kept.append(file)
             }
@@ -197,7 +208,7 @@ public enum Crawler {
                 kept.removeAll { file in
                     let skip = datasets[(file.path as NSString).deletingLastPathComponent] != nil
                         && [.image, .audio, .video].contains(file.kind)
-                    if skip { leftOut("dataset", under: foundRoot[file.path] ?? "") }
+                    if skip { leftOut("dataset", under: foundRoot[file.path] ?? "", path: file.path) }
                     return skip
                 }
             }

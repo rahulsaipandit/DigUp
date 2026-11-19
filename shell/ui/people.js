@@ -99,9 +99,14 @@ async function renderGroups() {
   box.replaceChildren();
   if (reply.groups.length === 0) {
     const status = await ask({ op: "faces_status" });
-    box.append(el("p", { class: "note" }, status.faces === 0
-      ? "No faces found yet. DigUp looks for faces in photos while it indexes, once face recognition is turned on, and groups the similar ones here for you to name."
-      : "Nothing is waiting to be named. New groups show up here as DigUp finds more photos."));
+    const [title, lines] = status.faces === 0 && status.scanned === 0
+      ? ["No faces yet", ["DigUp looks for faces while it indexes, once “Recognize people in photos” is on in Settings, and groups the similar ones here for you to name."]]
+      : status.groups === 0 && status.people === 0
+        ? ["Still going through your photos",
+           [`${status.scanned.toLocaleString()} photos looked at so far, ${plural(status.faces, "face", "faces")} found.`,
+            "A group shows up here once at least 3 faces from 2 photos look alike. This list updates as more photos are scanned."]]
+        : ["Nothing waiting to be named", ["New groups show up here as DigUp finds more photos."]];
+    box.append(el("div", { class: "empty" }, el("div", { class: "mark" }, "☺"), el("h2", {}, title), ...lines.map((text) => el("p", {}, text))));
   }
   for (const group of reply.groups) box.append(groupCard(group));
   $("groups-count").textContent = reply.total > 0 ? String(reply.total) : "";
@@ -236,8 +241,9 @@ async function refreshCounts() {
   $("people-count").textContent = people.length > 0 ? String(people.length) : "";
   $("groups-count").textContent = status.groups > 0 ? String(status.groups) : "";
   const left = status.faces - status.named_faces;
-  $("status").textContent = status.faces === 0 ? ""
-    : `${plural(status.faces, "face", "faces")} in ${plural(status.photos, "photo", "photos")}, ${left.toLocaleString()} not named yet`;
+  $("status").textContent = status.faces === 0 ? (status.scanned > 0 ? `${status.scanned.toLocaleString()} photos looked at so far, no faces yet` : "")
+    : `${plural(status.faces, "face", "faces")} in ${plural(status.photos, "photo", "photos")}, ${left.toLocaleString()} not named yet`
+      + (status.scanned > status.photos ? ` (${status.scanned.toLocaleString()} photos looked at so far)` : "");
 }
 
 async function show(name) {
@@ -267,5 +273,18 @@ window.addEventListener("keydown", (event) => {
 });
 // New groups can arrive while the window is open (indexing goes on): a look when it is brought back.
 window.addEventListener("focus", () => { if (tab !== "album" && !document.activeElement?.matches("input")) show(tab); });
+
+// DOWNSTREAM-FORK (2026-11-18): while DigUp is still going through the photos, the counts and the groups to name are looked at again every 15 seconds,
+// unless a name is being typed (a refresh would clear it).
+let seenGroups = -1;
+setInterval(async () => {
+  if (document.hidden || tab === "album" || document.activeElement?.matches("input, select")) return;
+  try {
+    const status = await ask({ op: "faces_status" });
+    // The first look only learns the number: the window has just drawn it, and drawing again would be for nothing.
+    if (seenGroups !== -1 && status.groups !== seenGroups) await show(tab); else await refreshCounts();
+    seenGroups = status.groups;
+  } catch { /* the next look tries again */ }
+}, 15000);
 
 show("groups");

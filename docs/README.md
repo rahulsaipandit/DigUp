@@ -3,6 +3,14 @@ Here's the dev-build way to run it on this machine. Everything is already built 
 ## QUICK RUN (using setup script)
 [scripts/dev-run.bat](scripts/dev-run.bat) sets PATH, `DIGUP_MODELS` and `DIGUP_BACKENDS`, then runs `digup.exe` with `--index D:\Temp\digup-dev-index`. Every argument you pass goes on to `digup.exe`.
 
+**Installing a built installer onto D:** [scripts/build-installer.bat](scripts/build-installer.bat) writes `shell\src-tauri\target\release\bundle\nsis\DigUp_<version>_x64-setup.exe`. Quit DigUp from the tray first (Windows cannot replace files in use), then run it silently with the D: folder (`/D=` must be last; `scripts/scratch/` is git-ignored and handy for a copy of the installer):
+
+```powershell
+& "D:\Github\DigUp\shell\src-tauri\target\release\bundle\nsis\DigUp_0.7.0-beta.3_x64-setup.exe" /S /D=D:\Users\rahul\AppData\Local\DigUp
+```
+
+The index and models folders are not touched by installing.
+
 For permanent folder like Photos and Videos, use permanent index
 **Permanent index (reuse it later):** use the D: mirror of the real location from CLAUDE.md, and use it every time.
 

@@ -9,6 +9,33 @@ Entry format: date and time (local), category, files, what changed, why, how it 
 
 ---
 
+## 2026-11-19 — "why" in Settings → Folders can list the files behind each count
+
+- **Category:** feature (visibility). **Files:** `Sources/DigUpKit/Crawler.swift`, `Sources/digup/SearchService.swift`,
+  `shell/src-tauri/src/main.rs` (the `ask` allowlist), `shell/ui/settings.js`, `shell/ui/settings.css`, `Tests/DigUpKitTests/CrawlerTests.swift`.
+- **What changed:** the "why" list on a folder showed only counts ("330 of types DigUp doesn't read", "47 skipped: small image 252×189"). Each line now has a
+  **files** link that lists the paths (up to 2,000), with **Copy the paths** and a click on a path to show it in Explorer. A new `search-service` request,
+  `unread_files` (`root`, `reason`, `from`, `limit`), answers it: for `from: "index"` (skipped once read) it asks the index; for `from: "crawl"` (never queued: other
+  types, skipped types, code or data files, folders not opened, and so on) it walks the folder again, because those files are not in the index and the crawl only
+  kept counts. `Crawler.crawl` has a new `collectPaths` argument (default 0, so nothing changes for the index service) and `CrawlReport.leftOutFiles`.
+- **Why:** to check which files are left out. The counts could not be verified.
+- **Design notes:** the listing runs beside the request loop (like `render`), one at a time, so a walk of a large folder does not stall typing. The helper only
+  lists a folder it was given. The list is capped; the count stays complete and the panel says "the first N of M".
+- **Not done:** the Mac app's own Settings window (`SettingsWindow.swift`) is unchanged; files that **couldn't be read** keep their existing Review… panel.
+- **Checked:** `CrawlerTests` (3 new tests: paths listed when asked, capped list with a complete count, a skipped folder listed under its reason) and 59 tests in
+  the crawler, face, failed-file and folder suites pass. `search-service` run against a copy of the real index and the real folder: `other type` listed 4 of 330,
+  `excluded type` 3 of 89 (the counts Settings showed), `no text` 1 of 1 from the index; a folder DigUp does not search is refused; a second request while one
+  is running is refused at once with a message. Not checked: clicking it in the running app.
+- **The People window moved** (same date): `People…` is no longer in the window's ⋯ menu; a person icon sits at the right end of the filter chips (All,
+  Screenshots, … Sort), after Sort when that shows (`shell/ui/window.js`, `window.css`, `results.js`). Not checked in the running app.
+- **Review fixes to staged work, same date:** `people.css` used `--fill`, `--chip` and `--leaf-text`, which `people.html` does not load, so the tab control, count
+  badges, empty-state mark and placeholders had no background (now defined in `people.css`); `people.js`'s 15-second refresh redrew once even when nothing had
+  changed (the first look now only records the group count); a doc comment sat between `@discardableResult` and its function in `FaceStep.swift`; a loose
+  install command in `docs/README.md` is now a documented step.
+- **On a sync:** keep the `DOWNSTREAM-FORK` blocks; if upstream changes the crawl's `leftOut(...)` calls, each needs its `path:` argument.
+
+---
+
 ## 2026-11-18 (PST, evening) — Review fixes for the face work
 Category: fix. Files: `Sources/DigUpKit/Faces/FaceStep.swift`, `FaceStore.swift`, `FaceMatching.swift`, `FacePeople.swift`, `FaceClustering.swift`,
 `Sources/digup/SearchService.swift`, `IndexService.swift`, `shell/ui/people.js`, `scripts/package-windows.sh`, `docs/person-recognition.md`.
@@ -18,6 +45,8 @@ Category: fix. Files: `Sources/DigUpKit/Faces/FaceStep.swift`, `FaceStore.swift`
 - `album(of:)` fetches copies with one query; clustering compares photo numbers, not Strings, in the n² loop.
 - Search by person: a name alone honours the kinds filter and finds a photo through a copy when its first path is gone.
 - Faces of folders taken out of Settings are now deleted when the index starts with its folder list (`FaceStore.prune`, called from `IndexService`); before, nothing called `removeFolder`.
+- Grouping while the scan goes on: after 200 pictures, then whenever the number scanned has doubled (`FaceStep.backfill`, `grouped:` callback, `IndexService`). Found on a real library: 48,854 photos scan at about 180 a minute, and groups used to appear only after the last one, so the People window said "Nothing is waiting to be named" for hours. The window now says it is still going through the photos, and shows how many were looked at.
+- Face progress in the status line: `status.rs` keeps the helper's `faces` events and the window and tray line gets " · Finding faces 25% · 250 of 1,000" (or " · Faces unavailable") after the quiet "files indexed" line; it goes when files need reading again. The People window looks again every 15 seconds (not while a name is typed). `cargo test status` passes.
 - The × in the People window's "Show all" is titled for what it does (leave the face out). A garbled comment in `package-windows.sh` is fixed.
 Not fixed: a clustering time budget; a pre-filtered search for name plus words (still the top few hundred word hits); a single deleted photo inside a kept folder.
 Checked: see the commit's test run. On a sync: keep these, they are tagged `DOWNSTREAM-FORK`.

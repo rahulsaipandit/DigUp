@@ -156,6 +156,10 @@ svg { display: block; }
 .chip .number { opacity: 0.6; font-variant-numeric: tabular-nums; }
 .chip.selected { background: var(--accent); color: white; }
 .kinds .sort { margin-left: auto; }
+/* DOWNSTREAM-FORK (2026-11-19): the People icon, last in the row: at the far right, after Sort when that shows. */
+.kinds .people { margin-left: auto; width: 28px; padding: 0; justify-content: center; }
+.kinds .sort ~ .people { margin-left: 0; }
+.chip.people svg { width: 14px; height: 14px; }
 .kinds .divider { width: 1px; height: 16px; margin: 0 4px; background: var(--line); }
 
 /* Results and the preview beside them */

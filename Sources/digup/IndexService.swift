@@ -332,6 +332,8 @@ final class IndexService: @unchecked Sendable {
             lock.withLock { stopRequested || !backfillAllowed || Date() >= yieldAt && (syncRequested || codeSyncRequested && code != nil) }
         }, progress: { done, total in
             emit(["event": "faces", "state": "scanning", "done": done, "total": total])
+        }, grouped: { groups in
+            emit(["event": "faces", "state": "grouped", "groups": groups])   // DOWNSTREAM-FORK (2026-11-18): while the scan goes on
         })
         faces.close()   // the face program's memory goes back while grouping runs
         // DOWNSTREAM-FORK (2026-11-18): new faces are grouped for the People window to offer.

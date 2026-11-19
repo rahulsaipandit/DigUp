@@ -8,15 +8,14 @@
   <link rel="stylesheet" href="people.css">
 </head>
 <body>
-  <header class="bar">
+  <header class="topbar">
     <nav class="tabs" id="tabs" role="tablist">
       <button role="tab" data-tab="groups">To name <span class="count" id="groups-count"></span></button>
       <button role="tab" data-tab="people">People <span class="count" id="people-count"></span></button>
     </nav>
-    <span class="message" id="message"></span>
-    <span class="status" id="status"></span>
     <button id="undo" class="plain" title="Undo the last change" disabled>Undo</button>
   </header>
+  <div class="strip"><span class="status" id="status"></span><span class="message" id="message"></span></div>
   <main id="main">
     <section id="groups" class="tab" role="tabpanel"></section>
     <section id="people" class="tab" role="tabpanel" hidden></section>

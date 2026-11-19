@@ -211,6 +211,17 @@ function renderBar() {
                        () => setFilter(state.filter === "code" ? null : "code"), 7));
   }
   if (sortable()) $kinds.append(sortButton());
+  $kinds.append(peopleButton());
+}
+
+/// DOWNSTREAM-FORK (2026-11-19): the People window, as a person icon at the right end of the chips (it was in the ⋯ menu).
+function peopleButton() {
+  const button = element("button", "chip people");
+  button.insertAdjacentHTML("beforeend", ICONS.person);
+  button.title = "People";
+  button.setAttribute("aria-label", "People");
+  button.onclick = () => invoke("open_people").catch(failed);
+  return button;
 }
 
 /// Whether there is an order to choose: results are showing, and more than one of them is strong.
@@ -1006,7 +1017,6 @@ function showMainMenu() {
     [paused ? "Resume Indexing" : "Pause Indexing", () => invoke("pause_indexing", { paused: !paused }).catch(failed),
      null, folders],
     null,
-    ["People…", () => invoke("open_people").catch(failed)],   // DOWNSTREAM-FORK (2026-11-18)
     ["Settings…", () => invoke("open_settings").catch(failed), `${MOD},`],
     state.app.update
       ? [`Update to DigUp ${state.app.update.version}…`, () => invoke("offer_update").catch(failed), null,

@@ -55,6 +55,8 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
     private var rendered: [String: String] = [:]
     private let renderLock = NSLock()
     private let renderSlots = DispatchSemaphore(value: 2)
+    /// DOWNSTREAM-FORK (2026-11-19): one listing of left-out files at a time (it walks the folder).
+    private let unreadSlot = DispatchSemaphore(value: 1)
 
     init(index: URL, roots: [String], skipped: [String], types: Set<String>, codeRoots: [String],
          codeSkipped: [String], idleSeconds: Double) throws {
@@ -104,6 +106,24 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
                         defer { renderSlots.signal() }
                         var reply: [String: Any]
                         do { reply = try render(request.value) } catch {
+                            reply = ["ok": false, "error": String("\(error)".prefix(500))]
+                        }
+                        reply["id"] = request.value["id"] ?? NSNull()
+                        write(reply)
+                    }
+                    continue
+                }
+                // DOWNSTREAM-FORK (2026-11-19): beside the request loop, like `render`: it walks a folder, and typing must not wait for that.
+                if op == "unread_files" {
+                    guard unreadSlot.wait(timeout: .now()) == .success else {
+                        write(["id": id, "ok": false, "error": "still listing another folder's files; try again in a moment"])
+                        continue
+                    }
+                    let request = UncheckedSendable(request)
+                    Thread.detachNewThread { [self] in
+                        defer { unreadSlot.signal() }
+                        var reply: [String: Any]
+                        do { reply = try unreadFiles(request.value) } catch {
                             reply = ["ok": false, "error": String("\(error)".prefix(500))]
                         }
                         reply["id"] = request.value["id"] ?? NSNull()
@@ -350,6 +370,41 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
         fields["kinds"] = kinds
         fields["skipped_reasons"] = skippedReasons
         return fields
+    }
+
+    // DOWNSTREAM-FORK (2026-11-19): the files behind a count in Settings → Folders → why.
+    //   {"op":"unread_files","root":folder,"reason":text,"from":"crawl"|"index","limit":n}
+    //       → {"files":[{"path":…}], "total":n, "truncated":bool}
+    // `from` "index": files the index holds as skipped, with that `detail` (what `summary` counts as `skipped_reasons`).
+    // `from` "crawl": files the last walk never queued, for that reason (what the index service reports as `left_out`; they are
+    // not in the index, so the folder is walked again, with the exclusions the shell gave this process).
+    private func unreadFiles(_ request: [String: Any]) throws -> [String: Any] {
+        guard let folder = request["root"] as? String, let reason = request["reason"] as? String else {
+            throw CLIError("which folder, and which reason?")
+        }
+        let limit = min(max(request["limit"] as? Int ?? 500, 1), 5000)
+        let root = Arguments.folderURL(folder).path
+        let (known, skippedFolders, skippedTypes) = lock.withLock { (roots.contains(root), skipped, types) }
+        guard known else { throw CLIError("not a folder DigUp searches") }
+        var paths: [String]
+        var total: Int
+        if request["from"] as? String == "index" {
+            let records = try lock.withLock { try store.files(under: [root]) }
+            // The states `summary` counts as skipped: all but these.
+            paths = records.filter { !["done", "partial", "pending", "failed"].contains($0.state) && ($0.detail ?? "not read") == reason }
+                .map(\.path).sorted()
+            total = paths.count
+            paths = Array(paths.prefix(limit))
+        } else {
+            var options = IndexOptions()
+            options.excludedFolders = skippedFolders
+            options.excludedExtensions = skippedTypes
+            let report = Crawler.crawl([URL(fileURLWithPath: root)], options: options, collectPaths: limit)
+            let key = report.leftOut.keys.first
+            total = key.flatMap { report.leftOut[$0]?[reason] } ?? 0
+            paths = (key.flatMap { report.leftOutFiles[$0]?[reason] } ?? []).sorted()
+        }
+        return ["files": paths.map { ["path": $0] }, "total": total, "truncated": total > paths.count]
     }
 
     // MARK: Previews
