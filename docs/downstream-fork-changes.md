@@ -9,17 +9,59 @@ Entry format: date and time (local), category, files, what changed, why, how it 
 
 ---
 
-## 2026-11-19 — Picture size slider, tick boxes with Select all / Delete, resizable details pane
+## 2026-11-20 — `dev-shell.ps1` and the "DigUp (dev)" shortcut
+
+- **Category:** tooling. **Files:** `scripts/dev-shell.ps1` (new), `docs/README.md`; the shortcut `C:\Users\rahul\Desktop\DigUp (dev).lnk` is outside the repo.
+- **What changed:** one command (or a double-click) quits the installed DigUp and any earlier dev build, runs `cargo build --target-dir D:\Temp\digup-shell-target`, links the
+  `helper` folder beside the dev exe, sets `DIGUP_BACKENDS` and PATH, and starts the dev build with `--index`/`--models` on the real index and models. The existing desktop and
+  Start menu shortcuts start the installed copy, so they never show a dev build. The shortcut's target is the full path of Windows PowerShell with `-NoProfile
+  -ExecutionPolicy Bypass -File …` (a first version with a bare `powershell.exe` was reported invalid and was deleted).
+- **Checked:** the script was run (build, helper link, start): the dev `digup-shell.exe` and its helper were running from `D:\Temp\digup-shell-target`. The shortcut's target, arguments,
+  script and icon paths were read back and exist. Not checked: a double-click on the shortcut, and what the failure window looks like.
+- **On a sync:** wholly ours.
+
+---
+
+## 2026-11-20 — `install-installer.ps1`; the local installer uses the permanent index
+
+- **Category:** tooling. **Files:** `scripts/install-installer.ps1` (new), `scripts/build-installer.bat`, `docs/README.md`.
+- **What changed:** (1) The silent installer cannot replace a running `DigUp.exe`, so an install over a running app "succeeded" and kept the old program (the
+  UI changes below were not seen until this was found). The script quits the app and its helpers (by path), installs the newest installer from `scripts\scratch`,
+  warns if `DigUp.exe` is byte for byte unchanged, and starts the app with `--index`/`--models` (default for production, `-Launch` for local). (2) The **local**
+  installer's built-in index is now `D:\Users\rahul\AppData\Local\DigUp\index` (was an empty throwaway under `D:\Temp`), so a trial app has the photos. It shares
+  that index with production: don't run both at once (the script warns). `scripts\dev-run.bat` still defaults to the throwaway index, on purpose: its `index`
+  command writes.
+- **Checked:** the script parses and was run once for production, after an install had already been done by hand: it stopped the app, installed, started the app with
+  `--index`/`--models`, and printed the "byte for byte the same" warning (correct, the build was the same). Not run for a new build, nor with `-Profile local`.
+- **On a sync:** the script is wholly ours; the `.bat` change is the one `DIGUP_BUILD_INDEX` line in the local profile.
+
+---
+
+## 2026-11-19 (revised 2026-11-20) — Picture size slider, tick boxes with Select all / Delete, resizable details pane
 
 - **Category:** feature. **Files:** `shell/ui/window.js`, `window.css`, `results.js` (trash icon), `shell/src-tauri/src/trash.rs` (new), `main.rs` (`trash_files`).
-- **What changed:** (1) A zoom slider in the chip row (Ctrl + wheel over the grid too, double-click resets) sets `--cell-min` (the grid's minimum tile width, 110–380 px)
-  and `--picture-height` (3/4 of it); it was a fixed 176 px / 132 px. (2) Each result has a round tick box (hover, or always once one is ticked; Ctrl-click and
-  Shift-click range also tick). While any is ticked the chips become `✕ N selected · Select all · Select none · Delete`; Esc clears. Delete (also in the right-click
-  menu) asks to confirm, then **moves the files to the Recycle Bin / Trash** (Windows `SHFileOperationW` with `FOF_ALLOWUNDO`, `gio trash`, Finder), never a permanent
-  delete; the results that were moved leave the list, the files that couldn't be moved stay and are reported. (3) A drag handle on the details pane's left edge
-  (240 px to 60 % of the window; double-click resets). Zoom and pane width are kept in `localStorage`.
-- **Not done / not checked:** the index isn't told about a deleted file; the next index pass drops it (Indexer prunes vanished files). Linux and macOS trash code is not
-  compiled or run here. `cargo check` (Windows) and `node --check` pass and the existing JS tests pass; the window itself was not driven by hand.
+- **What changed:**
+  1. **Zoom.** A control at the right of the chip row: a magnifier with − (click: 15 % smaller), the slider, a magnifier with + (15 % larger); Ctrl/⌘ + wheel over the
+     grid and a double-click on the slider (reset) do the same. It sets `--cell-min` (the grid's minimum tile width, 110–380 px, was a fixed 176 px) and
+     `--picture-height` (3/4 of it, was 132 px). From 230 px up the whole picture is shown (`object-fit: contain`, the `fit` class on `:root`); below that it is cropped to the
+     tile as before. Pictures are asked of the helper larger as the tiles grow (240 / 400 / 640 px, `thumbSize()`), and re-asked 0.3 s after the slider rests when that size
+     changes. The slider needed `$kinds.onmousedown` not to `preventDefault` on a range input (it ate the drag).
+  2. **Picture box.** `.cell .picture img` is now `position: absolute; inset: 0`. As a grid item, `height: 100%` of an auto row let a portrait photo grow taller than the
+     box (803 px in a 285 px box), which clipped it whatever the `object-fit`. This also changes the default zoom: portrait photos are now cropped evenly around the centre,
+     as the original CSS intended.
+  3. **Selecting.** Each result has a round tick box (on hover, and on every result once one is ticked; Ctrl/⌘-click ticks, Shift-click ticks a range). The first item in the row is
+     a "Select all" toggle (a tick box with the words; "Unselect all" once everything shown is ticked, a dash when some are), followed by a divider, All … Audio, a divider, Sort,
+     the zoom control and People. While any result is ticked, "N selected" and a red Delete button show after the zoom control; Esc clears.
+  4. **Delete** (the button, or the right-click menu's "Delete…", which acts on all ticked results when the clicked one is ticked) asks to confirm (Cancel is focused), then
+     **moves the files to the Recycle Bin / Trash**: Windows `SHFileOperationW` with `FOF_ALLOWUNDO | FOF_WANTNUKEWARNING`, `gio trash` on Linux, Finder through `osascript`
+     on macOS; never a permanent delete. The files that were moved leave the results and the counts; the ones that could not be moved stay, and the status line says how many.
+  5. **Details pane.** A drag handle on its left edge (240 px to 60 % of the window; double-click resets to 324 px).
+  - Zoom and the pane's width are kept in `localStorage`.
+- **Not done / not checked:** the index is not told about a deleted file (the next index pass drops it, as `Indexer` prunes vanished files; not tried). The Linux and macOS
+  trash code is not compiled or run. A delete was not tried by hand, nor the pane handle or the confirm dialog (the owner's screenshot shows 105 results ticked, so ticking and Select all work).
+- **Checked:** `cargo check` and a debug build on Windows; `node --check` and the existing JS tests. In the running dev build (read through its debug port): the `fit` rule is
+  loaded, the images are `object-fit: contain` and 960 px wide at the largest zoom, and a portrait photo's `<img>` is 452×285 inside a 452×285 box (it was 452×803 before item 2).
+  The owner's screenshot of the dev build shows the slider with its − and + magnifiers, Sort after Audio with a divider, and "105 selected" with Delete.
 - **On a sync:** search for `DOWNSTREAM-FORK (2026-11-19)` in `window.js`/`window.css`; `trash.rs` is wholly ours.
 
 ---

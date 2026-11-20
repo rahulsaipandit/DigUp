@@ -1,7 +1,7 @@
 @echo off
 rem DOWNSTREAM-FORK: builds DigUp's Windows installers on this machine (scripts/package-windows.sh, with the environment it needs).
 rem
-rem   scripts\build-installer.bat local          "DigUp Local": its own install folder and settings, indexes in D:\Temp, built cheaper
+rem   scripts\build-installer.bat local          "DigUp Local": its own install folder and settings, the permanent index on D:, built cheaper
 rem   scripts\build-installer.bat production     "DigUp": the real app, the permanent index on D:, built as upstream ships it
 rem   scripts\build-installer.bat both           one after the other
 rem
@@ -36,7 +36,9 @@ goto :environment
 
 :local
 set "DIGUP_PROFILE=local"
-set "DIGUP_BUILD_INDEX=D:\Temp\digup-dev-index"
+rem DOWNSTREAM-FORK (2026-11-20): the real index, not an empty throwaway: trying the UI needs the owner's photos. Do not run
+rem "DigUp Local" and "DigUp" at the same time (they share it).
+set "DIGUP_BUILD_INDEX=D:\Users\rahul\AppData\Local\DigUp\index"
 rem Cheaper to build: thin LTO and 16 code-generation units instead of full LTO and one (see shell/src-tauri/Cargo.toml), and
 rem zlib in the installer (package-windows.sh). The result is a little bigger and slower, which a trial app does not mind. It gets
 rem its own target folder: a changed profile makes cargo rebuild every dependency, so one shared folder would redo them all each
