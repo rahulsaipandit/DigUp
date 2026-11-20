@@ -147,6 +147,25 @@ import WinSDK
         #expect(try store.files(under: [drive.path]).count == 1)
     }
 
+    // DOWNSTREAM-FORK (2026-11-19): what a sync tells the faces file about single photos.
+    @Test func syncReportsTheFilesItRemovedAndTheOnesItFollowed() throws {
+        let base = URL(fileURLWithPath: FolderSelection.realPath(folder.path))
+        let lib = base.appendingPathComponent("lib")
+        try FileManager.default.createDirectory(at: lib, withIntermediateDirectories: true)
+        for name in ["gone.txt", "moves.txt", "stays.txt"] { try Data("notes in \(name)".utf8).write(to: lib.appendingPathComponent(name)) }
+        let store = try IndexStore(directory: base.appendingPathComponent("index"))
+        let indexer = try Indexer(store: store, options: IndexOptions(),
+                                  makeEmbedder: { throw WorkerError.notFound("no model needed to sync") })
+        #expect(try indexer.sync([lib]).added == 3)
+        try FileManager.default.removeItem(at: lib.appendingPathComponent("gone.txt"))
+        try FileManager.default.moveItem(at: lib.appendingPathComponent("moves.txt"), to: lib.appendingPathComponent("moved.txt"))
+        let summary = try indexer.sync([lib])
+        #expect(summary.removed == 1 && summary.removedPaths.map { ($0 as NSString).lastPathComponent } == ["gone.txt"])
+        #expect(summary.moved == 1)
+        #expect(summary.movedPaths.map { (($0.from as NSString).lastPathComponent, ($0.to as NSString).lastPathComponent) }
+                    .map { "\($0.0)>\($0.1)" } == ["moves.txt>moved.txt"])
+    }
+
     @Test func syncFindsTheRowsOfAFolderSpelledAnotherWay() throws {
         // The walk stores paths as the disk spells them, and on a Mac these folders are chosen spelled otherwise twice
         // over: under /var where the disk says /private/var (the temporary folder), and with a name the disk keeps

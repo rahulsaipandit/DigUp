@@ -89,6 +89,7 @@ function show(reply, text, phase) {
   const strong = Math.min(reply.strong ?? hits.length, hits.length);
   state.text = text;
   state.phase = phase;
+  state.note = reply.note || null;   // DOWNSTREAM-FORK (2026-11-19): about a `folder:` in the query that was not understood or holds nothing
   state.strong = hits.slice(0, strong);
   state.weaker = hits.slice(strong);
   // Grouped by kind, the best hit's group first; code is one group with the room of all of them.
@@ -380,6 +381,7 @@ function renderFooter() {
   // Results while indexing (or before the model is in) may be missing some: that, where they're counted.
   else if (state.caveat && !state.isCode) summary = state.caveat;
   else summary = `${strong} ${strong === 1 ? "result" : "results"}` + (weaker ? ` · ${weaker} weaker` : "");
+  if (state.note && !state.error) summary += ` · ${state.note}`;
   $summary.textContent = summary;
   $keys.textContent = `↩ Open   ${MOD}↩ Show in ${FILE_MANAGER}   ␣ Preview`;
 }

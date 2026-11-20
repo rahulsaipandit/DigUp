@@ -164,7 +164,9 @@ A **separate `faces.sqlite`** in the index folder, following `code.sqlite` (no e
 
 - a file that changed or disappeared drops its `face` rows (the same sync that prunes the main index). Labels do not depend on those rows: they are
   anchored to the **path and box** with a copy of the embedding (see the tables), so they survive a rescan and can re-attach (§7);
-- a moved file is found by the main index's inode tracking **[verify how moves reach faces.sqlite]**;
+- a moved or renamed file is followed by the main index's inode tracking, and the sync now reports it (`SyncSummary.movedPaths`), so its faces, labels and
+  rejections are re-keyed to the new path; a deleted file's are deleted, with their embedding copies (`FaceStore.follow`, 2026-11-19). At start,
+  `FaceStore.pruneGone` also forgets photos deleted while nothing was watching, skipping chosen folders that are not there (an unplugged drive is not a deletion);
 - **removing a folder in Settings deletes that folder's faces, labels and embedding copies** (privacy, §11). A person left with no faces keeps their name,
   with an empty album, and the number of labels removed is shown. This is the one case where labels are deleted, and it is the user's explicit action.
 

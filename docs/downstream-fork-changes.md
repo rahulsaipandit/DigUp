@@ -9,6 +9,61 @@ Entry format: date and time (local), category, files, what changed, why, how it 
 
 ---
 
+## 2026-11-19 — Picture size slider, tick boxes with Select all / Delete, resizable details pane
+
+- **Category:** feature. **Files:** `shell/ui/window.js`, `window.css`, `results.js` (trash icon), `shell/src-tauri/src/trash.rs` (new), `main.rs` (`trash_files`).
+- **What changed:** (1) A zoom slider in the chip row (Ctrl + wheel over the grid too, double-click resets) sets `--cell-min` (the grid's minimum tile width, 110–380 px)
+  and `--picture-height` (3/4 of it); it was a fixed 176 px / 132 px. (2) Each result has a round tick box (hover, or always once one is ticked; Ctrl-click and
+  Shift-click range also tick). While any is ticked the chips become `✕ N selected · Select all · Select none · Delete`; Esc clears. Delete (also in the right-click
+  menu) asks to confirm, then **moves the files to the Recycle Bin / Trash** (Windows `SHFileOperationW` with `FOF_ALLOWUNDO`, `gio trash`, Finder), never a permanent
+  delete; the results that were moved leave the list, the files that couldn't be moved stay and are reported. (3) A drag handle on the details pane's left edge
+  (240 px to 60 % of the window; double-click resets). Zoom and pane width are kept in `localStorage`.
+- **Not done / not checked:** the index isn't told about a deleted file; the next index pass drops it (Indexer prunes vanished files). Linux and macOS trash code is not
+  compiled or run here. `cargo check` (Windows) and `node --check` pass and the existing JS tests pass; the window itself was not driven by hand.
+- **On a sync:** search for `DOWNSTREAM-FORK (2026-11-19)` in `window.js`/`window.css`; `trash.rs` is wholly ours.
+
+---
+
+## 2026-11-19 — `folder:` in a query limits the search to complete paths, subfolders included
+
+- **Category:** feature. **Files:** `Sources/DigUpKit/FolderQuery.swift` (new: the parser, the matching, the notes, `IndexStore.fileIDs(in:)`),
+  `Searcher.swift` (`onlyFiles`), `Sources/digup/SearchService.swift`, `shell/ui/window.js`, `shell/ui/panel.js`, `Tests/DigUpKitTests/FolderQueryTests.swift`,
+  `docs/README.md` (how to use it).
+- **What changed:** `receipts folder:"D:\RP_Backup\RP_Bak_Photos_Videos\Photos"`, or `folder:D:\a,E:\b` (a comma between complete paths, quotes where a path has
+  a space), searches only inside those folders and everything below them. Relative names such as `folder:Receipts` are not matched, by decision, and are reported.
+  The paths may use either slash and any case (Windows and macOS). The limit is applied **before scoring** (`Searcher.search(… onlyFiles:)`), so a search finds the
+  best matches inside the folder, not the best few hundred of everywhere that happen to be in it. It works with the kind chips, a person's name and `code:`.
+  `embed_ahead` embeds the query without the `folder:` part. The reply carries a `note` when a path is not complete, when a folder holds nothing indexed (it is
+  named, and the note says a path with a space needs quotes), or when `folder:` has no path; the window's status line and the panel's footer show it. A query
+  that is only `folder:…` returns nothing and says what to add.
+- **Not done:** a folder picker. Recommended next, as a button that inserts `folder:"…"` into the query, so the syntax stays the one source of truth.
+- **Checked:** 8 new tests (parser, quoting, lists, matching, the search staying inside folders and subfolders, ids per folder) and the suites around them (93
+  tests) pass. Run through `search-service` against a copy of the real index: `beach` in `…\Photos\2012` gave 76 results, all from 2012, where the unfiltered
+  top 100 had only 8 from that year; a list of two folders, a wrong name, a folder with nothing and an unquoted space each gave the right note. Not checked: typing
+  it in the window or the panel.
+- **On a sync:** keep the `DOWNSTREAM-FORK` blocks; `Searcher.search` has a new last parameter.
+
+---
+
+## 2026-11-19 — Deleting a single photo now deletes its face data; moving one keeps it
+
+- **Category:** fix (privacy). **Files:** `Sources/DigUpKit/Faces/FaceStore.swift` (`follow`, `pruneGone`, shared per-path delete), `FaceStep.swift`,
+  `Sources/DigUpKit/Indexer.swift` (`SyncSummary.removedPaths`, `movedPaths`), `Sources/digup/IndexService.swift`, `Tests/DigUpKitTests/FaceTests.swift`,
+  `IndexStoreTests.swift`, `docs/person-recognition.md` (§6).
+- **What changed:** before, only taking a whole folder out of Settings removed face data; deleting one photo from a kept folder left its faces, scan row, labels
+  and embeddings in `faces.sqlite` (the "not fixed" item of the 2026-11-18 review). Now the index service passes each sync's removed and moved paths to the face
+  store in one transaction: a **deleted** photo loses its faces, scan row, labels, rejections and content rows (and emptied groups go); a **moved or renamed**
+  photo keeps all of them under its new path, so its names come along. Only files that are really gone from the disk count as deleted: a file the index merely
+  left out (an excluded type, an offloaded cloud file) keeps its data. The undo log is cleared only when a label or rejection was removed.
+- **Also:** at start, `pruneGone` forgets photos deleted while nothing was watching (before this fix, or with faces off). A path counts only if its chosen
+  folder is there, so an unplugged drive is not a deletion.
+- **Checked:** 4 new face tests (deleted photo, the undo log left alone when no label goes, a moved photo keeps its name, `pruneGone` and the unplugged drive) and
+  one sync test (removed and moved paths reported); 73 tests in the face, crawler, index store and failed-file suites pass. Not checked: in the running app, and
+  `pruneGone` on the real library (it stats every photo recorded in `faces.sqlite` at start).
+- **On a sync:** keep the `DOWNSTREAM-FORK` blocks; the removed and moved lists are new fields on upstream's `SyncSummary`.
+
+---
+
 ## 2026-11-19 — "why" in Settings → Folders can list the files behind each count
 
 - **Category:** feature (visibility). **Files:** `Sources/DigUpKit/Crawler.swift`, `Sources/digup/SearchService.swift`,

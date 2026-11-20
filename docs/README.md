@@ -1,5 +1,17 @@
 Here's the dev-build way to run it on this machine. Everything is already built and the model files are in place.
 
+## Searching inside folders (fork)
+
+Put `folder:` and complete paths in the query to search only inside them; subfolders are included. A comma separates several paths, and a path with a space goes in quotes:
+
+```
+receipts folder:"D:\RP_Backup\RP_Bak_Photos_Videos\Photos"
+receipts folder:D:\Photos,E:\Scans
+receipts folder:"D:\My Photos", "E:\Old Pictures"
+```
+
+Only complete paths work (`folder:Receipts` is not understood, and the status line says so). The paths may be written as Explorer shows them, in any case. If a folder holds nothing indexed, or a path with a space was left unquoted, the status line names it. `folder:` alone, with no words, asks what to look for.
+
 ## QUICK RUN (using setup script)
 [scripts/dev-run.bat](scripts/dev-run.bat) sets PATH, `DIGUP_MODELS` and `DIGUP_BACKENDS`, then runs `digup.exe` with `--index D:\Temp\digup-dev-index`. Every argument you pass goes on to `digup.exe`.
 

@@ -8,6 +8,9 @@ import Foundation
 /// Protocol: one JSON request per line on stdin, one JSON response per line on stdout, carrying the request's `id`.
 ///   {"op":"search","q":…,"code":bool,"kinds":[…],"limit":n,"meaning":bool,"prefix_last":bool}
 ///       → {"hits":[…], "strong":n, "meaning":bool, "ms":{"embed":…,"search":…}}
+///         DOWNSTREAM-FORK (2026-11-19): `q` may hold `folder:"D:\Photos"` or `folder:D:\a,D:\b` (complete paths, comma between,
+///         quotes round a path with a space): only files inside those folders, subfolders too, are searched (`FolderQuery`); the
+///         reply has a `note` when the folders were not understood or hold nothing.
 ///         `meaning` false: keyword-only (while typing, or while the encoder isn't ready); `strong`: the weaker-matches
 ///         fold (`Searcher.strongCount`); each hit has the fields of `digup search --json` plus segment_id, modified,
 ///         size and info.
@@ -46,6 +49,8 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
     private var encoder: (any Embedder)?
     private var encoderState = "stopped"
     private var vectorCache: [String: [Float]] = [:]
+    /// DOWNSTREAM-FORK (2026-11-19): the files inside the folders of a `folder:` query, by folders (`folderIDs`).
+    private var folderFiles: [String: (ids: Set<Int64>, empty: [String])] = [:]
     private var lastQuery = Date()
     private var warnedAboutSource = false
     private let lock = NSLock()
@@ -146,10 +151,15 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
         switch op {
         case "search":
             // DOWNSTREAM-FORK (2026-11-18): a name in the query ("Priya", "Priya and Sam at the beach") limits the results to photos of those people.
-            let asked = request["q"] as? String ?? ""
+            // DOWNSTREAM-FORK (2026-11-19): `folder:"D:\Photos"` (or several, comma between) limits the search to those folders and everything inside them.
+            let folderQuery = FolderQuery.parse(request["q"] as? String ?? "")
+            let asked = folderQuery.text
             let person = request["code"] as? Bool == true ? nil : try personFilter(asked)
             let text = person?.remaining ?? asked
             let code = request["code"] as? Bool ?? false
+            let inFolders = try folderIDs(folderQuery, code: code)
+            let scope = inFolders?.ids
+            let folderOnly = folderQuery.isFiltered && text.isEmpty && person == nil   // nothing to look for yet
             let kinds = (request["kinds"] as? [String]).map { Set($0.compactMap(FileKind.init(rawValue:))) }
             let limit = request["limit"] as? Int ?? 40
             let wantMeaning = request["meaning"] as? Bool ?? true
@@ -171,16 +181,18 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
             }
             let embedded = Date()
             let hits: [SearchHit]
-            if code {
+            if folderOnly {
+                hits = []
+            } else if code {
                 guard let codeSearcher else { return ["hits": [], "strong": 0, "meaning": false] }
-                hits = try codeSearcher.search(text, queryVector: vector, limit: limit, prefixLast: prefixLast).filter {
+                hits = try codeSearcher.search(text, queryVector: vector, limit: limit, prefixLast: prefixLast, onlyFiles: scope).filter {
                     FolderSelection.isSearched($0.path, folders: codeRoots, skipped: codeSkipped)
                         && FileManager.default.fileExists(atPath: $0.path)
                 }
             } else if let person {
                 let (roots, skipped, types) = (self.roots, self.skipped, self.types)
                 let usable: (String) -> Bool = {
-                    FolderSelection.isSearched($0, folders: roots, skipped: skipped)
+                    FolderSelection.isSearched($0, folders: roots, skipped: skipped) && folderQuery.contains($0)
                         && !types.contains(($0 as NSString).pathExtension.lowercased()) && FileManager.default.fileExists(atPath: $0)
                 }
                 if text.isEmpty {
@@ -189,11 +201,12 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
                         .prefix(limit).map { Self.photoHit($0) }
                 } else {
                     // The words are searched as usual, over more results than shown, and the photos of these people are kept.
-                    hits = Array(try searcher.search(text, queryVector: vector, kinds: kinds, limit: max(limit * 25, 500), prefixLast: prefixLast)
+                    hits = Array(try searcher.search(text, queryVector: vector, kinds: kinds, limit: max(limit * 25, 500), prefixLast: prefixLast,
+                                                     onlyFiles: scope)
                         .filter { person.paths.contains($0.path) && usable($0.path) }.prefix(limit))
                 }
             } else {
-                hits = try searcher.search(text, queryVector: vector, kinds: kinds, limit: limit, prefixLast: prefixLast)
+                hits = try searcher.search(text, queryVector: vector, kinds: kinds, limit: limit, prefixLast: prefixLast, onlyFiles: scope)
                     .filter {
                         FolderSelection.isSearched($0.path, folders: roots, skipped: skipped)
                             && !types.contains(($0.path as NSString).pathExtension.lowercased())
@@ -207,15 +220,21 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
             ]
             if let warning { reply["warning"] = warning }
             if let person { reply["people"] = person.names }
+            if folderQuery.found {
+                if let note = folderQuery.note(empty: inFolders?.empty ?? []) { reply["note"] = note }
+                else if folderOnly { reply["note"] = "now add what to look for, for example: receipts folder:\"…\"" }
+            }
             return reply
         case "embed_ahead":
-            _ = vector(for: request["q"] as? String ?? "", code: request["code"] as? Bool ?? false)
+            // DOWNSTREAM-FORK (2026-11-19): what is embedded is what is searched, without the `folder:` part.
+            _ = vector(for: FolderQuery.parse(request["q"] as? String ?? "").text, code: request["code"] as? Bool ?? false)
             return ["ok": true]
         case "text":
             guard let segment = (request["segment"] as? NSNumber)?.int64Value else { throw CLIError("which segment?") }
             let code = request["code"] as? Bool ?? false
             return ["text": try (code ? codeSearcher : searcher)?.text(ofSegment: segment) ?? NSNull()]
         case "reload":
+            folderFiles.removeAll()   // the index changed: the files inside a folder may have too
             let hadVectors = searcher.vectorsLoaded
             searcher = try Searcher(store: store, loadVectors: hadVectors)
             if let codeStore {
@@ -228,6 +247,7 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
             let code = request["code"] as? Bool ?? false
             return ["roots": (code ? codeRoots : roots).map { summary(of: $0, in: code ? codeStore : store) }]
         case "folders":
+            folderFiles.removeAll()
             if let value = request["roots"] as? [String] { roots = value.map { Arguments.folderURL($0).path } }
             if let value = request["skipped"] as? [String] { skipped = value.map { Arguments.folderURL($0).path } }
             if let value = request["types"] as? [String] { types = IndexOptions.extensions(value.joined(separator: ",")) }
@@ -329,6 +349,17 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
         let found = entries ?? []
         return PersonFilter(remaining: resolution.remaining, names: resolution.slots.map(\.phrase), entries: found,
                             paths: Set(found.flatMap { [$0.path] + $0.copies }))
+    }
+
+    /// DOWNSTREAM-FORK (2026-11-19): the indexed files inside the query's folders (nil without any), found once and kept until the index changes.
+    private func folderIDs(_ query: FolderQuery, code: Bool) throws -> (ids: Set<Int64>, empty: [String])? {
+        guard query.isFiltered, let part = code ? codeStore : store else { return nil }
+        let key = (code ? "code\u{0}" : "") + query.folders.joined(separator: "\u{0}")
+        if let known = folderFiles[key] { return known }
+        let found = try part.fileIDs(in: query)
+        if folderFiles.count > 16 { folderFiles.removeAll() }
+        folderFiles[key] = found
+        return found
     }
 
     /// A photo as a result with no words behind it (a search for people alone).

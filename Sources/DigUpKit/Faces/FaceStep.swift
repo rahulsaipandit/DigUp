@@ -79,6 +79,17 @@ public final class FaceStep {
         do { try openStore().prune(keepingUnder: roots) } catch { lastError = "removing the faces of removed folders: \(error)" }
     }
 
+    /// DOWNSTREAM-FORK (2026-11-19): a sync's single photos: the ones that moved keep their faces and names under the new path, the ones that were
+    /// deleted lose theirs. Only files that are really gone are passed as removed (a file the index merely left out is still on the disk). Never throws.
+    public func follow(moved: [(from: String, to: String)], removed: [String]) {
+        do { try openStore().follow(moved: moved, removed: removed) } catch { lastError = "following moved and deleted photos: \(error)" }
+    }
+
+    /// DOWNSTREAM-FORK (2026-11-19): at start, the faces of photos deleted while nothing was watching. Never throws.
+    public func pruneGone(under roots: [String]) {
+        do { try openStore().pruneGone(under: roots) } catch { lastError = "removing the faces of deleted photos: \(error)" }
+    }
+
     /// Frees the face program's memory until the next picture.
     public func close() {
         worker?.close()

@@ -16,6 +16,7 @@ mod moments;
 mod options;
 mod settings;
 mod status;
+mod trash;
 mod tray_icon;
 mod updates;
 mod watcher;
@@ -444,6 +445,26 @@ fn copy_file(window: tauri::WebviewWindow, path: String) -> Result<(), String> {
     clipboard::copy_file(&window, Path::new(&path)).inspect_err(|error| eprintln!("digup-shell: can't copy {path}: {error}"))
 }
 
+/// DOWNSTREAM-FORK (2026-11-19): "Delete" on the selected results: each file to the Recycle Bin / Trash. Returns the paths that
+/// were moved (the page drops those from the results); the rest are still where they were.
+#[tauri::command]
+async fn trash_files(paths: Vec<String>) -> Vec<String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        paths
+            .into_iter()
+            .filter(|path| match trash::trash(Path::new(path)) {
+                Ok(()) => true,
+                Err(error) => {
+                    eprintln!("digup-shell: can't delete {path}: {error}");
+                    false
+                }
+            })
+            .collect()
+    })
+    .await
+    .unwrap_or_default()
+}
+
 /// A result dragged out of the window (to a file manager, a mail, a chat) on Windows and the Mac: the system's own drag
 /// of the file, with its thumbnail (`icon`, a picture already rendered) or DigUp's icon under the pointer, started while
 /// the button is down. On Linux the page drags it itself (WebKit's drag starts from the press, as Wayland wants).
@@ -710,7 +731,7 @@ fn main() {
             panel_area, settings_info, set_open_at_login, set_center_panel, set_processor_only, set_faces, delete_face_data, debug_query, debug_report, window_info,
             app_state, open_window, open_settings, open_people, choose_folders, index_now, quit_app, close_window, pause_indexing,
             remove_folder, set_skipped, set_skip_types, set_index_hours, code_setup_info, set_code_folders, choose_code_folders,
-            remove_code_folder, turn_off_code, set_code_editor, window_resized, copy_file, drag_out, set_hotkey, hold_hotkey,
+            remove_code_folder, turn_off_code, set_code_editor, window_resized, copy_file, trash_files, drag_out, set_hotkey, hold_hotkey,
             set_tray_click, check_for_updates, offer_update, set_update_checks, open_licenses, retry_failed
         ])
         .build(tauri::generate_context!())

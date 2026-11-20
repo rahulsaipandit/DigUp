@@ -254,6 +254,7 @@ function renderOf(hit) {
 }
 
 const ICONS = {
+  trash: '<svg viewBox="0 0 24 24"><path d="M4.5 7 H19.5 M9.5 7 V4.5 H14.5 V7 M6.5 7 L7.4 19.5 H16.6 L17.5 7 M10 11 V16 M14 11 V16"/></svg>',
   chevron: '<svg class="chevron" viewBox="0 0 16 16" width="12" height="12"><path d="M6 3.5 L10.5 8 L6 12.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   play: '<svg viewBox="0 0 20 20"><path d="M5 3 L17 10 L5 17 Z"/></svg>',
   pause: '<svg viewBox="0 0 20 20"><path d="M5 3 H8.5 V17 H5 Z M11.5 3 H15 V17 H11.5 Z"/></svg>',

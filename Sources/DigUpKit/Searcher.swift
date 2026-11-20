@@ -113,11 +113,16 @@ public final class Searcher {
     public static let codeWordWeight = 1.0
 
     public func search(_ text: String, queryVector: [Float]?, kinds: Set<FileKind>? = nil, limit: Int = 20,
-                       zGate: Double = 2.0, wordWeight: Double? = nil, prefixLast: Bool = false) throws -> [SearchHit] {
+                       zGate: Double = 2.0, wordWeight: Double? = nil, prefixLast: Bool = false,
+                       onlyFiles: Set<Int64>? = nil) throws -> [SearchHit] {
         let wordWeight = wordWeight ?? (isCode ? Self.codeWordWeight : Self.wordWeight)
         if queryVector != nil, !vectorsLoaded { try reload() }
         let fileKind = self.fileKind
-        let allowed = { (file: Int64) -> Bool in kinds == nil || fileKind[file].map { kinds!.contains($0) } ?? false }
+        // DOWNSTREAM-FORK (2026-11-19): `onlyFiles` limits the search to these files (a `folder:` in the query, `FolderQuery`), before anything
+        // is scored, so the best matches inside a folder are found and not the best few hundred of everywhere that happen to be in it.
+        let allowed = { (file: Int64) -> Bool in
+            (onlyFiles?.contains(file) ?? true) && (kinds == nil || fileKind[file].map { kinds!.contains($0) } ?? false)
+        }
 
         // Meaning: score every vector on this query's scale (`meaning`), keep each file's best segment.
         var best: [Int64: (z: Double, cosine: Double, row: Int)] = [:]

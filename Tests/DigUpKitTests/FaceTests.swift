@@ -118,6 +118,61 @@ import Testing
         #expect(rows == 0)
     }
 
+    // DOWNSTREAM-FORK (2026-11-19): single photos in a folder that stays.
+    @Test func aDeletedPhotoLosesItsFacesAndLabelsButTheRestStay() throws {
+        let index = try index(), search = try search()
+        let ids = try photos(index, of: 1, count: 4)
+        let person = try search.enrol(faces: ids, as: "Priya")
+        let removal = try index.follow(moved: [], removed: ["/pics/p1-0.jpg"])
+        #expect(removal.faces == 1 && removal.scans == 1 && removal.labels == 1)
+        #expect(try index.faceCount() == 3)
+        #expect(try index.scanStatus(of: "/pics/p1-0.jpg") == nil)
+        #expect(try search.labels(where: "path = '/pics/p1-0.jpg'").isEmpty)
+        #expect(try search.labels(where: "1 = 1").count == 3)          // the other photos keep their names
+        #expect(try search.people().map(\.id) == [person])
+        #expect(try search.undo() == nil)                             // a label went: undo must not bring it back
+    }
+
+    @Test func aDeletedPhotoWithNoLabelLeavesTheUndoLogAlone() throws {
+        let index = try index(), search = try search()
+        let ids = try photos(index, of: 1, count: 3)
+        _ = try search.enrol(faces: ids, as: "Priya")
+        try index.recordScan(path: "/pics/stranger.jpg", size: 1, mtime: 1, signature: sig, detections: [detection(vector(7))])
+        let removal = try index.follow(moved: [], removed: ["/pics/stranger.jpg"])
+        #expect(removal.faces == 1 && removal.labels == 0)
+        #expect(try search.undo() != nil)                             // naming Priya can still be undone
+    }
+
+    @Test func aMovedPhotoKeepsItsFacesAndNamesUnderTheNewPath() throws {
+        let index = try index(), search = try search()
+        let ids = try photos(index, of: 1, count: 3)
+        let person = try search.enrol(faces: ids, as: "Priya")
+        try index.follow(moved: [(from: "/pics/p1-0.jpg", to: "/trip/renamed.jpg")], removed: [])
+        #expect(try index.faceRecords(path: "/pics/p1-0.jpg").isEmpty)
+        #expect(try index.faceRecords(path: "/trip/renamed.jpg").count == 1)
+        #expect(try index.scanStatus(of: "/trip/renamed.jpg")?.status == .faces)
+        #expect(try search.labels(where: "path = '/trip/renamed.jpg'").count == 1)   // the name came along
+        #expect(try search.album(of: person).count == 3)
+    }
+
+    @Test func pruneGoneForgetsOnlyPhotosThatAreGoneFromAFolderThatIsThere() throws {
+        let index = try index()
+        let root = folder.appendingPathComponent("lib")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let kept = root.appendingPathComponent("kept.jpg"), deleted = root.appendingPathComponent("deleted.jpg")
+        try Data([1]).write(to: kept)
+        for path in [kept.path, deleted.path, "/unplugged/drive/photo.jpg"] {
+            try index.recordScan(path: path, size: 1, mtime: 1, signature: sig, detections: [detection(vector(3))])
+        }
+        // /unplugged is a chosen folder whose drive is away: nothing under it counts as deleted.
+        let removal = try index.pruneGone(under: [root.path, "/unplugged"])
+        #expect(removal.faces == 1)
+        #expect(try index.scanStatus(of: deleted.path) == nil)
+        #expect(try index.scanStatus(of: kept.path) != nil)
+        #expect(try index.scanStatus(of: "/unplugged/drive/photo.jpg") != nil)
+        #expect(try index.pruneGone(under: [root.path, "/unplugged"]) == FaceStore.Removal())
+    }
+
     @Test func pruningKeepsOnlyThePhotosUnderTheFoldersStillIndexed() throws {
         let index = try index(), search = try FaceStore(directory: folder, role: .search)
         let ids = try photos(index, of: 1, count: 4)

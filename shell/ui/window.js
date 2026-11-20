@@ -44,6 +44,12 @@ const state = {
   selection: null,      // a result's path
   showWeaker: false,
   showsPreview: true,
+  checked: new Set(),   // DOWNSTREAM-FORK (2026-11-19): paths ticked with the checkboxes (for Delete)
+  lastChecked: null,    // the last one ticked: shift-click ticks the range from it
+  zoom: 176,
+  thumbSize: 240,
+  thumbTimer: null,
+  sideWidth: 324,
   navigated: false,     // the selection was moved by the arrow keys or a click since the last edit: ← → move it then
   generation: 0,
   timer: null,
@@ -112,7 +118,7 @@ function run() {
   const text = /^code:/i.test(typed) ? typed.slice(5).trim() : typed;
   state.codePhase = null;
   if (!typed || (code && (!state.info.hasCode || !text))) {
-    Object.assign(state, { ranked: [], weaker: [], counts: {}, hasResults: false, selection: null });
+    Object.assign(state, { ranked: [], weaker: [], counts: {}, hasResults: false, selection: null, note: null });
     if (typed) state.codePhase = state.info.hasCode ? "hint" : "off";
     render();
     return;
@@ -134,7 +140,8 @@ function run() {
         const key = FILTER_OF_KIND[hit.kind];
         counts[key] = (counts[key] || 0) + 1;
       }
-      Object.assign(state, { counts, text, meaning: shown.meaning, hasResults: true, showWeaker: false,
+      // DOWNSTREAM-FORK (2026-11-19): `note`: what the helper says about a `folder:` in the query that was not understood or holds nothing.
+      Object.assign(state, { counts, text, meaning: shown.meaning, hasResults: true, showWeaker: false, note: shown.note || null,
                              ranked: shown.hits.slice(0, shown.strong), weaker: shown.hits.slice(shown.strong) });
       if (!rows().some((hit) => hit.path === state.selection)) state.selection = rows()[0]?.path ?? null;
       render();
@@ -199,18 +206,22 @@ function renderBar() {
     : state.info.hasCode ? "Describe it: “zebra in a video”, “code: retry with backoff”…"
     : "Describe it: “receipt from the hardware store”, “zebra in a video”…";
   $kinds.replaceChildren();
+  if (zoomable()) $kinds.append(selectAllToggle(), element("span", "divider"));
   $kinds.append(chip("All", null, null, state.filter === null && !code, () => setFilter(null), 1));
   FILTERS.forEach((filter, index) => {
     const selected = state.filter === filter.key && !code;
     $kinds.append(chip(filter.title, filter.icon, code ? null : state.counts[filter.key], selected,
                        () => setFilter(selected ? null : filter.key), index + 2));
   });
+  // A divider after the last kind: before Code when there is code search, else before Sort and the zoom.
+  if (state.info.hasCode || sortable() || zoomable()) $kinds.append(element("span", "divider"));
   if (state.info.hasCode) {
-    $kinds.append(element("span", "divider"));
     $kinds.append(chip("Code", "code", code ? state.counts.code : null, code,
                        () => setFilter(state.filter === "code" ? null : "code"), 7));
   }
   if (sortable()) $kinds.append(sortButton());
+  if (zoomable()) $kinds.append(zoomControl());
+  if (state.checked.size) $kinds.append(...deleteControls());
   $kinds.append(peopleButton());
 }
 
@@ -286,7 +297,7 @@ function grid() {
 }
 
 function cells(hits, className) {
-  const box = element("div", className);
+  const box = element("div", className + (state.checked.size ? " checking" : ""));
   for (const hit of hits) box.append(cell(hit));
   return box;
 }
@@ -307,6 +318,8 @@ function cell(hit) {
   }
   const place = placeOf(hit);
   if (place) picture.append(element("span", "place on-image", place));
+  picture.append(checkbox(hit));
+  if (state.checked.has(hit.path)) item.classList.add("checked");
   item.append(picture, element("div", "name", "‎" + nameOf(hit.path)), folderLine(folderOf(hit)));
   wire(item, hit);
   return item;
@@ -320,7 +333,7 @@ function cellPicture(hit) {
   if (what) {
     const image = element("img", hit.kind === "pdf" ? "page" : "");
     image.alt = "";
-    image.dataset.render = JSON.stringify([...what, Math.round(240 * (window.devicePixelRatio || 1))]);
+    image.dataset.render = JSON.stringify([...what, Math.round(thumbSize() * (window.devicePixelRatio || 1))]);
     thumbnails.observe(image);
     return image;
   }
@@ -447,17 +460,24 @@ function wire(item, hit) {
     window.addEventListener("mousemove", moved);
     window.addEventListener("mouseup", done);
   };
-  item.onclick = () => select(hit.path);
+  item.onclick = (event) => {
+    // DOWNSTREAM-FORK (2026-11-19): Ctrl/⌘-click ticks the result; Shift-click ticks the range from the last one ticked.
+    if (event.ctrlKey || event.metaKey || (event.shiftKey && state.lastChecked)) toggleChecked(hit.path, event.shiftKey);
+    select(hit.path);
+  };
   item.ondblclick = () => open(hit);
   item.oncontextmenu = (event) => {
     event.preventDefault();
     select(hit.path);
+    const several = state.checked.has(hit.path) && state.checked.size > 1;
     showMenu(event.clientX, event.clientY, [
       ["Open", () => open(hit)],
       [`Show in ${FILE_MANAGER}`, () => reveal(hit)],
       null,
       ["Copy", () => invoke("copy_file", { path: hit.path }).catch(failed)],
       ["Copy Path", () => navigator.clipboard.writeText(hit.path).catch(() => {})],
+      null,
+      [several ? `Delete ${state.checked.size} Selected…` : "Delete…", () => confirmDelete(several ? hitsChecked() : [hit])],
     ]);
   };
 }
@@ -955,6 +975,7 @@ function renderStatus() {
     const strong = state.ranked.length, weaker = state.weaker.length;
     count = app.caveat || (!state.meaning ? "Words only: meaning search isn't available"
       : `${strong} ${strong === 1 ? "result" : "results"}` + (weaker ? ` · ${weaker} weaker` : ""));
+    if (state.note) count += ` · ${state.note}`;
   }
   $("count").textContent = count;
   renderUpdate(app.update);
@@ -1032,6 +1053,268 @@ document.addEventListener("mousedown", (event) => {
 });
 window.addEventListener("blur", hideMenu);
 
+// MARK: DOWNSTREAM-FORK (2026-11-19): zoom, ticking results, deleting them, the resizable preview pane
+
+const ZOOM = { min: 110, max: 380, normal: 176 };   // the grid's minimum tile width (px); the picture is 3/4 of it high
+const SIDE = { min: 240, normal: 324 };
+const FIT_FROM = 230;   // from this tile width the whole picture is shown (letterboxed), not a 4:3 crop of it
+/// The pixels a picture is rendered at, by how big the tiles are.
+function thumbSize() { return state.zoom < 200 ? 240 : state.zoom < 300 ? 400 : 640; }
+
+function stored(key, fallback) {
+  try {
+    const value = Number(localStorage.getItem(key));
+    return Number.isFinite(value) && value > 0 ? value : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function store(key, value) {
+  try { localStorage.setItem(key, String(value)); } catch { /* the setting lasts only for this session */ }
+}
+
+function setZoom(width, save = true) {
+  width = Math.round(Math.max(ZOOM.min, Math.min(ZOOM.max, width)));
+  const root = document.documentElement.style;
+  root.setProperty("--cell-min", `${width}px`);
+  root.setProperty("--picture-height", `${Math.round(width * 0.75)}px`);
+  state.zoom = width;
+  root.setProperty("--fit", width >= FIT_FROM ? "1" : "0");
+  document.documentElement.classList.toggle("fit", width >= FIT_FROM);
+  // Bigger tiles need sharper pictures: when the size class changes, the pictures are asked for again (after the slider rests).
+  if (thumbSize() !== state.thumbSize) {
+    clearTimeout(state.thumbTimer);
+    state.thumbTimer = setTimeout(() => {
+      if (state.thumbSize === thumbSize() || !$content.querySelector(".grid")) { state.thumbSize = thumbSize(); return; }
+      state.thumbSize = thumbSize();
+      const scroll = $content.scrollTop;
+      renderContent();
+      $content.scrollTop = scroll;
+    }, 300);
+  }
+  if (save) store("digup.zoom", width);
+  const slider = document.getElementById("zoom");
+  if (slider) slider.value = String(width);
+}
+
+function zoomable() {
+  return state.hasResults && state.query.trim() !== "" && !state.codePhase && !isCode() && state.ranked.length + state.weaker.length > 0;
+}
+
+/// A slider between a small and a large picture, at the right of the chips (Ctrl + wheel over the results does the same).
+function zoomControl() {
+  const box = element("div", "zoom");
+  box.title = "Size of the pictures (Ctrl + wheel; double-click the slider to reset)";
+  const step = (label, sign, factor) => {
+    const button = element("button", "zoom-step");
+    button.type = "button";
+    button.title = label;
+    button.setAttribute("aria-label", label);
+    button.innerHTML = `<svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5 L20.5 20.5 M7.5 10.5 H13.5${sign}"/></svg>`;
+    button.onclick = () => setZoom(state.zoom * factor);
+    return button;
+  };
+  const slider = element("input");
+  slider.type = "range";
+  slider.id = "zoom";
+  slider.min = ZOOM.min;
+  slider.max = ZOOM.max;
+  slider.step = 2;
+  slider.value = state.zoom;
+  slider.setAttribute("aria-label", "Size of the pictures");
+  slider.oninput = () => setZoom(Number(slider.value));
+  slider.ondblclick = () => setZoom(ZOOM.normal);
+  box.append(step("Smaller pictures", "", 1 / 1.15), slider, step("Larger pictures", "M10.5 7.5 V13.5", 1.15));
+  return box;
+}
+
+$content.addEventListener("wheel", (event) => {
+  if (!(event.ctrlKey || event.metaKey) || !$content.querySelector(".grid")) return;
+  event.preventDefault();
+  setZoom(state.zoom * (event.deltaY < 0 ? 1.08 : 1 / 1.08));
+}, { passive: false });
+
+/// The round tick at a picture's top-left corner: it shows on hover, and on every picture once one is ticked.
+function checkbox(hit) {
+  const box = element("button", "check");
+  box.type = "button";
+  box.setAttribute("role", "checkbox");
+  box.setAttribute("aria-label", `Select ${nameOf(hit.path)}`);
+  box.setAttribute("aria-checked", String(state.checked.has(hit.path)));
+  box.innerHTML = '<svg viewBox="0 0 20 20"><path d="M5.5 10.5 L8.6 13.6 L14.5 6.8"/></svg>';
+  const keep = (event) => { event.preventDefault(); event.stopPropagation(); };   // not a click on the result, not a drag
+  box.onmousedown = keep;
+  box.ondblclick = keep;
+  box.oncontextmenu = (event) => event.stopPropagation();
+  box.onclick = (event) => { keep(event); toggleChecked(hit.path, event.shiftKey); };
+  return box;
+}
+
+function hitsChecked() {
+  return rows().filter((hit) => state.checked.has(hit.path));
+}
+
+/// Ticks or unticks one result; with `range`, ticks everything from the last one ticked to this one.
+function toggleChecked(path, range) {
+  const shown = rows();
+  if (range && state.lastChecked) {
+    const [from, to] = [state.lastChecked, path].map((p) => shown.findIndex((hit) => hit.path === p));
+    if (from >= 0 && to >= 0) {
+      for (const hit of shown.slice(Math.min(from, to), Math.max(from, to) + 1)) state.checked.add(hit.path);
+      return checkedChanged();
+    }
+  }
+  if (state.checked.has(path)) state.checked.delete(path);
+  else state.checked.add(path);
+  state.lastChecked = path;
+  checkedChanged();
+}
+
+function setAllChecked(all) {
+  state.checked = new Set(all ? rows().map((hit) => hit.path) : []);
+  state.lastChecked = null;
+  checkedChanged();
+}
+
+/// Updates the ticks in place (a re-render would lose the scroll position and the pictures).
+function checkedChanged() {
+  for (const item of $content.querySelectorAll(".cell[data-path]")) {
+    const on = state.checked.has(item.dataset.path);
+    item.classList.toggle("checked", on);
+    item.querySelector(".check")?.setAttribute("aria-checked", String(on));
+  }
+  for (const grid of $content.querySelectorAll(".grid")) grid.classList.toggle("checking", state.checked.size > 0);
+  renderBar();
+}
+
+/// First in the row: a tick box with "Select all" (or "Unselect all" once every result shown is ticked).
+function selectAllToggle() {
+  const total = rows().length, count = state.checked.size;
+  const everything = total > 0 && count >= total;
+  const button = element("button", "chip select-toggle" + (count ? " on" : ""));
+  const mark = count === 0 ? "" : everything ? '<path d="M5.5 10.5 L8.6 13.6 L14.5 6.8"/>' : '<path d="M6 10 H14"/>';
+  button.insertAdjacentHTML("beforeend", `<svg viewBox="0 0 20 20"><rect x="2.5" y="2.5" width="15" height="15" rx="3.5"/>${mark}</svg>`);
+  button.append(everything ? "Unselect all" : "Select all");
+  button.title = everything ? "Clear the selection" : `Select all ${total.toLocaleString()} shown`;
+  button.setAttribute("aria-pressed", String(everything));
+  button.onclick = () => setAllChecked(!everything);
+  return button;
+}
+
+/// While anything is ticked: how many, and Delete.
+function deleteControls() {
+  const count = state.checked.size;
+  const remove = element("button", "chip danger");
+  remove.insertAdjacentHTML("beforeend", ICONS.trash);
+  remove.append("Delete");
+  remove.title = `Delete the ${count} selected…`;
+  remove.onclick = () => confirmDelete(hitsChecked());
+  return [element("span", "selected-count", `${count.toLocaleString()} selected`), remove];
+}
+
+/// "Delete 3 files?" and what happens to them; only Delete moves them (to the Recycle Bin / Trash).
+function confirmDelete(hits) {
+  if (!hits.length) return;
+  hideMenu();
+  const count = hits.length;
+  const size = hits.reduce((sum, hit) => sum + (hit.size || 0), 0);
+  const bin = isWindows ? "Recycle Bin" : "Trash";
+  const veil = element("div", "veil");
+  const dialog = element("div", "dialog");
+  dialog.setAttribute("role", "alertdialog");
+  const title = element("h2", "", count === 1 ? "Delete this file?" : `Delete ${count.toLocaleString()} files?`);
+  const text = element("p", "", count === 1 ? `“${nameOf(hits[0].path)}” will be moved to the ${bin}.`
+    : `These files${size ? ` (${bytes(size)})` : ""} will be moved to the ${bin}. You can restore them from there.`);
+  const buttons = element("div", "buttons");
+  const cancel = element("button", "", "Cancel");
+  const go = element("button", "danger", "Delete");
+  buttons.append(cancel, go);
+  dialog.append(title, text, buttons);
+  veil.append(dialog);
+  const close = () => { veil.remove(); document.removeEventListener("keydown", keys, true); $query.focus(); };
+  const keys = (event) => {
+    if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); close(); }
+    if (event.key === "Tab") { event.preventDefault(); (document.activeElement === cancel ? go : cancel).focus(); }
+  };
+  document.addEventListener("keydown", keys, true);
+  cancel.onclick = close;
+  veil.onmousedown = (event) => { if (event.target === veil) close(); };
+  go.onclick = async () => {
+    go.disabled = cancel.disabled = true;
+    go.textContent = "Deleting…";
+    try {
+      const done = new Set(await invoke("trash_files", { paths: hits.map((hit) => hit.path) }));
+      forget(done);
+      if (done.size < count) failed(`${count - done.size} of ${count} files couldn't be moved to the ${bin} and are still there.`);
+    } catch (error) {
+      failed(error);
+    }
+    close();
+  };
+  document.body.append(veil);
+  cancel.focus();   // Enter doesn't delete by accident
+}
+
+/// Takes deleted files out of the results, the counts and the selection.
+function forget(paths) {
+  if (!paths.size) return;
+  for (const hit of state.ranked) {
+    const key = FILTER_OF_KIND[hit.kind];
+    if (paths.has(hit.path) && key && state.counts[key]) state.counts[key] -= 1;
+  }
+  const index = rows().findIndex((hit) => hit.path === state.selection);
+  state.ranked = state.ranked.filter((hit) => !paths.has(hit.path));
+  state.weaker = state.weaker.filter((hit) => !paths.has(hit.path));
+  for (const path of paths) state.checked.delete(path);
+  state.lastChecked = null;
+  if (paths.has(state.selection)) {
+    const left = rows();
+    state.selection = left[Math.min(Math.max(index, 0), left.length - 1)]?.path ?? null;
+  }
+  const scroll = $content.scrollTop;
+  render();
+  $content.scrollTop = scroll;
+}
+
+/// The pane's left edge is a handle: drag to widen or narrow the pane (double-click: back to the usual width).
+function setSideWidth(width, save = true) {
+  const max = Math.max(SIDE.min, Math.round(window.innerWidth * 0.6));
+  width = Math.round(Math.max(SIDE.min, Math.min(max, width)));
+  $side.style.width = `${width}px`;
+  state.sideWidth = width;
+  if (save) store("digup.side", width);
+}
+
+(() => {
+  const handle = element("div", "side-handle");
+  handle.setAttribute("role", "separator");
+  handle.setAttribute("aria-orientation", "vertical");
+  handle.title = "Drag to resize (double-click to reset)";
+  $side.before(handle);
+  handle.onmousedown = (event) => {
+    event.preventDefault();
+    const start = { x: event.clientX, width: $side.getBoundingClientRect().width };
+    document.body.classList.add("resizing");
+    const moved = (move) => setSideWidth(start.width + (start.x - move.clientX), false);
+    const done = () => {
+      document.body.classList.remove("resizing");
+      window.removeEventListener("mousemove", moved);
+      window.removeEventListener("mouseup", done);
+      store("digup.side", state.sideWidth);
+    };
+    window.addEventListener("mousemove", moved);
+    window.addEventListener("mouseup", done);
+  };
+  handle.ondblclick = () => setSideWidth(SIDE.normal);
+  window.addEventListener("resize", () => setSideWidth(state.sideWidth, false));
+  const follow = () => { handle.hidden = $side.hidden; };
+  new MutationObserver(follow).observe($side, { attributes: true, attributeFilter: ["hidden"] });
+  follow();
+  setSideWidth(stored("digup.side", SIDE.normal), false);
+  setZoom(stored("digup.zoom", ZOOM.normal), false);
+})();
+
 // MARK: Keys and events
 
 $query.addEventListener("input", queryChanged);
@@ -1061,7 +1344,7 @@ $("more").onmousedown = (event) => event.preventDefault();
 $("more").onclick = () => ($menu.hidden ? showMainMenu() : hideMenu());
 $("status-line").onclick = () => invoke("choose_folders").catch(failed);
 $("update").onclick = () => invoke("offer_update").catch(failed);
-$kinds.onmousedown = (event) => event.preventDefault();
+$kinds.onmousedown = (event) => { if (event.target.type !== "range") event.preventDefault(); };   // the slider needs the press
 
 function updatePreviewButton() {
   const button = $("toggle-preview");
@@ -1111,6 +1394,11 @@ document.addEventListener("keydown", (event) => {
         state.navigated = false;
         return;
     }
+  }
+  if (event.key === "Escape" && state.checked.size && plain) {
+    event.preventDefault();
+    setAllChecked(false);
+    return;
   }
   switch (event.key) {
     case " ":

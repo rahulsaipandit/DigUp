@@ -317,32 +317,79 @@ public final class FaceStore {
     public func prune(keepingUnder roots: [String]) throws -> Removal {
         let prefixes = roots.flatMap { IndexStore.pathRanges(under: $0).map(\.from) }
         var gone: [String] = []
-        for table in ["face", "scan", "label", "rejection", "content"] {
-            try db.query("SELECT DISTINCT path FROM \(table)") { row in
-                let path = row.text(0) ?? ""
-                if !prefixes.contains(where: { path.hasPrefix($0) }) { gone.append(path) }
-            }
-        }
-        gone = Array(Set(gone))
+        for path in try recordedPaths() where !prefixes.contains(where: { path.hasPrefix($0) }) { gone.append(path) }
         var removal = Removal()
         guard !gone.isEmpty else { return removal }
         try db.transaction {
-            for path in gone {
-                let at: [SQLValue] = [.text(path)]
-                func count(_ table: String) throws -> Int {
-                    var n = 0
-                    try db.query("SELECT COUNT(*) FROM \(table) WHERE path = ?", at) { n = Int($0.int(0)) }
-                    return n
-                }
-                removal.faces += try count("face"); removal.scans += try count("scan")
-                removal.labels += try count("label"); removal.rejections += try count("rejection")
-                try db.run("DELETE FROM grp_face WHERE face_id IN (SELECT id FROM face WHERE path = ?)", at)
-                for table in ["face", "scan", "label", "rejection", "content"] { try db.run("DELETE FROM \(table) WHERE path = ?", at) }
-            }
-            try db.run("DELETE FROM grp WHERE id NOT IN (SELECT group_id FROM grp_face)")
+            for path in gone { try deleteRows(at: path, into: &removal) }
+            try dropEmptyGroups()
             try db.run("DELETE FROM op_log")   // as removeFolder: undo must not bring removed labels back
         }
         return removal
+    }
+
+    /// DOWNSTREAM-FORK (2026-11-19): what the index learned from a sync about single photos in folders that are still kept. A photo that moved
+    /// or was renamed (the index follows it by inode) keeps its faces, labels and rejections under the new path; a photo that was deleted loses
+    /// them, embedding copies included (privacy, §11). `removed` is what the sync dropped; the caller passes only the files that are really gone.
+    /// Undo is cleared only when a label or rejection went, since the log holds copies of those rows.
+    @discardableResult
+    public func follow(moved: [(from: String, to: String)], removed: [String]) throws -> Removal {
+        var removal = Removal()
+        guard !moved.isEmpty || !removed.isEmpty else { return removal }
+        try db.transaction {
+            for move in moved where move.from != move.to {
+                // Anything already recorded under the new path is stale: the index did not know that path before.
+                var stale = Removal()
+                try deleteRows(at: move.to, into: &stale)
+                for table in ["face", "scan", "label", "rejection", "content"] {
+                    try db.run("UPDATE \(table) SET path = ? WHERE path = ?", [.text(move.to), .text(move.from)])
+                }
+            }
+            for path in removed { try deleteRows(at: path, into: &removal) }
+            try dropEmptyGroups()
+            if removal.labels + removal.rejections > 0 { try db.run("DELETE FROM op_log") }
+        }
+        return removal
+    }
+
+    /// DOWNSTREAM-FORK (2026-11-19): at start, forgets the photos that were deleted while nothing was watching: before this existed, or while
+    /// faces were off. A path counts only if its chosen folder is there to be looked in (an unplugged drive is not a deletion) and the file is not.
+    @discardableResult
+    public func pruneGone(under roots: [String]) throws -> Removal {
+        let prefixes = roots.filter { FileManager.default.fileExists(atPath: $0) }
+            .flatMap { IndexStore.pathRanges(under: $0).map(\.from) }
+        guard !prefixes.isEmpty else { return Removal() }
+        let gone = try recordedPaths().filter { path in
+            prefixes.contains(where: { path.hasPrefix($0) }) && !FileManager.default.fileExists(atPath: path)
+        }
+        return try follow(moved: [], removed: gone)
+    }
+
+    /// Every path any face table mentions.
+    private func recordedPaths() throws -> [String] {
+        var paths = Set<String>()
+        for table in ["face", "scan", "label", "rejection", "content"] {
+            try db.query("SELECT DISTINCT path FROM \(table)") { paths.insert($0.text(0) ?? "") }
+        }
+        return Array(paths)
+    }
+
+    /// One photo's rows in every table, counted and deleted. Inside a transaction of the caller's.
+    private func deleteRows(at path: String, into removal: inout Removal) throws {
+        let at: [SQLValue] = [.text(path)]
+        func count(_ table: String) throws -> Int {
+            var n = 0
+            try db.query("SELECT COUNT(*) FROM \(table) WHERE path = ?", at) { n = Int($0.int(0)) }
+            return n
+        }
+        removal.faces += try count("face"); removal.scans += try count("scan")
+        removal.labels += try count("label"); removal.rejections += try count("rejection")
+        try db.run("DELETE FROM grp_face WHERE face_id IN (SELECT id FROM face WHERE path = ?)", at)
+        for table in ["face", "scan", "label", "rejection", "content"] { try db.run("DELETE FROM \(table) WHERE path = ?", at) }
+    }
+
+    private func dropEmptyGroups() throws {
+        try db.run("DELETE FROM grp WHERE id NOT IN (SELECT group_id FROM grp_face)")
     }
 
     /// "Delete all face data": the faces file goes (the cached crops are the caller's, in the previews folder). Not undoable.

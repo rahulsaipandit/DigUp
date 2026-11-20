@@ -22,6 +22,11 @@ public final class Indexer {
         public var crawl: CrawlReport
         /// Files this sync queued for embedding (new or changed), so a watcher can index exactly those first.
         public var queued: [Int64] = []
+        /// DOWNSTREAM-FORK (2026-11-19): which files the sync dropped and which it followed to a new path, for what is kept beside the
+        /// index by path (the faces file): a deleted photo's faces must go, a moved one's must come along.
+        public var removedPaths: [String] = []
+        public var movedPaths: [Moved] = []
+        public struct Moved: Sendable { public let from: String, to: String }
     }
 
     public struct Event: Sendable {
@@ -120,6 +125,7 @@ public final class Indexer {
                     try store.move(row.id, to: file.path)
                     movedFrom.insert(row.path)
                     summary.moved += 1
+                    summary.movedPaths.append(.init(from: row.path, to: file.path))
                 } else {
                     summary.queued.append(try store.insert(file))
                     summary.added += 1
@@ -133,6 +139,7 @@ public final class Indexer {
                 && !vanished.contains(where: { row.path.hasPrefix($0) }) {
                 try store.delete(row.id)
                 summary.removed += 1
+                summary.removedPaths.append(row.path)
             }
         }
         return summary

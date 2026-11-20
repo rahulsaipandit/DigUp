@@ -155,10 +155,9 @@ svg { display: block; }
 .chip svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
 .chip .number { opacity: 0.6; font-variant-numeric: tabular-nums; }
 .chip.selected { background: var(--accent); color: white; }
-.kinds .sort { margin-left: auto; }
+.kinds .sort { margin-left: 2px; }
 /* DOWNSTREAM-FORK (2026-11-19): the People icon, last in the row: at the far right, after Sort when that shows. */
 .kinds .people { margin-left: auto; width: 28px; padding: 0; justify-content: center; }
-.kinds .sort ~ .people { margin-left: 0; }
 .chip.people svg { width: 14px; height: 14px; }
 .kinds .divider { width: 1px; height: 16px; margin: 0 4px; background: var(--line); }
 
@@ -179,7 +178,7 @@ svg { display: block; }
 
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(176px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(var(--cell-min, 176px), 1fr));
   gap: 18px 14px;
   padding: 16px;
 }
@@ -188,7 +187,7 @@ svg { display: block; }
 
 .cell .picture {
   position: relative;
-  height: 132px;
+  height: var(--picture-height, 132px);
   border-radius: 8px;
   background: var(--tile);
   box-shadow: inset 0 0 0 0.5px var(--line);
@@ -670,3 +669,78 @@ svg { display: block; }
 .big .view.text { align-items: stretch; justify-content: stretch; overflow: auto; }
 .big .view.text > * { flex: 1; max-height: none; font-size: 14px; }
 .big .view .placeholder svg { width: 96px; height: 96px; opacity: 0.5; }
+
+/* DOWNSTREAM-FORK (2026-11-19): zoom slider, tick boxes, selection bar, delete dialog, resizable preview pane */
+
+.kinds .zoom { margin-left: auto; display: flex; align-items: center; gap: 2px; color: var(--secondary); }
+.kinds .zoom ~ .people { margin-left: 0; }
+.zoom-step { flex: none; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 6px; background: none; color: inherit; display: grid; place-items: center; }
+.zoom-step:hover { background: var(--fill); }
+.zoom-step svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; }
+.zoom input[type="range"] { width: 96px; height: 14px; margin: 0; accent-color: var(--accent); }
+
+.kinds .select-toggle svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.kinds .select-toggle.on { background: var(--chip); color: var(--accent); }
+.kinds .selected-count { font-size: 12px; font-weight: 600; margin: 0 2px 0 10px; white-space: nowrap; }
+.kinds .chip:disabled { opacity: 0.4; pointer-events: none; }
+.kinds .chip.danger { margin-left: 0; background: #d93a2f; color: white; }
+.kinds .chip.danger:hover { background: #bf2f25; }
+
+.cell .check {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  z-index: 2;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1.5px solid white;
+  background: rgba(0, 0, 0, 0.35);
+  display: grid;
+  place-items: center;
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+.cell .check svg { width: 14px; height: 14px; fill: none; stroke: white; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; opacity: 0; }
+.cell:hover .check, .grid.checking .check, .cell .check:focus-visible { opacity: 1; }
+.cell .check:hover svg { opacity: 0.7; }
+.cell.checked .check { opacity: 1; background: var(--accent); border-color: var(--accent); }
+.cell.checked .check svg { opacity: 1; }
+.cell:hover .kind-badge, .grid.checking .kind-badge { opacity: 0; }
+.cell.checked .picture img, .cell.checked .picture .text-card { transform: scale(0.9); border-radius: 6px; }
+.cell .picture img, .cell .picture .text-card { transition: transform 0.1s; }
+.cell.checked .picture { background: var(--fill-strong); }
+
+.veil { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; background: rgba(0, 0, 0, 0.4); }
+.dialog {
+  width: min(380px, calc(100vw - 48px));
+  padding: 20px 22px 16px;
+  border-radius: 12px;
+  background: var(--menu);
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.35), 0 0 0 0.5px var(--fill-strong);
+}
+.dialog h2 { margin: 0 0 8px; font-size: 15px; }
+.dialog p { margin: 0 0 18px; color: var(--secondary); overflow-wrap: anywhere; }
+.dialog .buttons { display: flex; justify-content: flex-end; gap: 8px; }
+.dialog button { height: 28px; padding: 0 16px; border: 0; border-radius: 7px; background: var(--fill); font-weight: 500; }
+.dialog button:hover:not(:disabled) { background: var(--fill-strong); }
+.dialog button:disabled { opacity: 0.6; }
+.dialog button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.dialog button.danger { background: #d93a2f; color: white; }
+.dialog button.danger:hover:not(:disabled) { background: #bf2f25; }
+
+.side-handle { flex: none; position: relative; width: 0; z-index: 3; cursor: col-resize; }
+.side-handle[hidden] { display: none; }
+.side-handle::before { content: ""; position: absolute; top: 0; bottom: 0; left: -4px; width: 8px; }
+.side-handle:hover::after, body.resizing .side-handle::after {
+  content: ""; position: absolute; top: 0; bottom: 0; left: -1px; width: 3px; background: var(--accent); opacity: 0.7;
+}
+body.resizing { cursor: col-resize; user-select: none; }
+.side { min-width: 240px; max-width: 60vw; }
+
+/* Large tiles show the whole picture instead of cropping a portrait photo to a wide box. */
+:root.fit .cell .picture img:not(.page) { object-fit: contain; }
+
+/* The image fills the picture box exactly. As a grid item, height:100% of an auto row made a portrait photo taller than the box, which clipped it (even with contain). */
+.cell .picture img { position: absolute; inset: 0; }

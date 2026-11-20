@@ -105,6 +105,8 @@ final class IndexService: @unchecked Sendable {
                     if !part.code { faces?.prune(keepingUnder: keepOnly.map(\.path)) }
                 }
             }
+            // DOWNSTREAM-FORK (2026-11-19): photos deleted while nothing was watching (before single deletions were followed, or with faces off).
+            faces?.pruneGone(under: main.roots.map(\.path))
         } catch {
             emit(["event": "error", "message": "\(error)", "fatal": true])
             finish()
@@ -247,6 +249,12 @@ final class IndexService: @unchecked Sendable {
                 var event: [String: Any] = ["event": "scanning", "checked": progress.checked, "code": part.code]
                 if let root = progress.root { event["root"] = root }
                 emit(event)
+            }
+            // DOWNSTREAM-FORK (2026-11-19): a moved photo keeps its faces and names; a deleted one loses them (a file only left out of the index, such as
+            // an excluded type, is still on the disk and keeps them).
+            if !part.code, let faces {
+                faces.follow(moved: summary.movedPaths.map { ($0.from, $0.to) },
+                             removed: summary.removedPaths.filter { !FileManager.default.fileExists(atPath: $0) })
             }
             if summary.queued.count <= newFilesLimit { newFiles.formUnion(summary.queued) }
             emitCounts("sync", [
