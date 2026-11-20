@@ -249,12 +249,39 @@ Checked: see the commit's test run. On a sync: keep these, they are tagged `DOWN
 
 ---
 
+## 2026-11-20 — Two installer profiles: local and production
+
+- **Category:** tooling / build
+- **Files:** `scripts/build-installer.bat`, `scripts/package-windows.sh`, `shell/src-tauri/src/options.rs` (tagged `DOWNSTREAM-FORK`), `.gitignore`
+  (`scripts/scratch/`), `docs/README.md`.
+- **What changed:** `build-installer.bat local|production|both`. `local` sets `DIGUP_PROFILE=local`, which makes `package-windows.sh` pass
+  `productName` "DigUp Local" and identifier `com.abdurrahim.DigUp.local` to Tauri (own install folder, settings and uninstall entry).
+  Both set `DIGUP_BUILD_INDEX` and `DIGUP_BUILD_MODELS`, which the shell compiles in (`option_env!`) as its default folders: local
+  `D:\Temp\digup-dev-index`, production `D:\Users\rahul\AppData\Local\DigUp\index`, models the same for both. Order for the index:
+  `--index`, build default, `DIGUP_INDEX`, the helper's default. Each installer is copied to `scripts/scratch/`.
+- **Local is built cheaper:** `build-installer.bat local` sets `CARGO_PROFILE_RELEASE_LTO=thin`, `CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16` and its
+  own `CARGO_TARGET_DIR` (`D:\Temp\digup-shell-target-local`, so switching profiles does not rebuild every dependency), and
+  `package-windows.sh` packs it with zlib (`bundle.windows.nsis.compression`, merged into the config; the installer hooks are kept).
+  `package-windows.sh` also rejects a `DIGUP_PROFILE` other than local or production, and finds the bundle in `CARGO_TARGET_DIR` when set.
+  `--no-bundle` was considered and not used: it drops the installer.
+- **Why:** one installer served both uses, and `DIGUP_INDEX` (set for the user) would have pointed a trial app at the permanent index.
+- **Checked:** `cargo check`; both installers build. Local: 113 MB, 3 min 31 s from an empty target folder; the generated NSIS script
+  has zlib and the uninstall hooks. Production: 93 MB.
+- **Caveat:** the folders are compiled in as D: paths of this machine (the script sets them), so an installer built here is for this
+  machine only: elsewhere those folders would not exist. For anything shared, build without `DIGUP_BUILD_INDEX` and `DIGUP_BUILD_MODELS`
+  (not through this script).
+- **Not checked:** installing either, running them together, uninstalling one (the AppContainer profile `DigUp.DecodeWorker` is shared, so an
+  uninstall removes it for the other), and the installed exe's name.
+- **On a sync:** `package-windows.sh` keeps the `identity` variable and its use in `--config`; `options.rs` keeps `build_folder`.
+
+---
+
 ## 2026-11-17 (PST, night) — Shell reads DIGUP_INDEX and DIGUP_MODELS
 
 - **Category:** feature (storage location)
 - **Files:** `shell/src-tauri/src/options.rs`, `shell/src-tauri/src/main.rs` (both tagged `DOWNSTREAM-FORK`).
 - **What changed:** when `--index` / `--models` are not given, the shell takes the index folder from `DIGUP_INDEX` and the model folder
-  from `DIGUP_MODELS`. The index one is a separate field (`index_env`, read through `Options::index_choice`), not `options.index`,
+  from `DIGUP_MODELS`. The index one is a separate field (`index_default`, read through `Options::index_choice`), not `options.index`,
   because a set `options.index` makes `dev_run()` true and drops the open-at-login entry. `--index` still wins over the variable.
 - **Why:** the installed app's only way to leave `%LOCALAPPDATA%` (C:) was a command-line argument, so a Start-menu or autostart
   launch used C:. With the variables set once for the user, every launch uses D:.

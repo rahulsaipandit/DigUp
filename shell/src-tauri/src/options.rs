@@ -12,11 +12,12 @@ pub struct Options {
     /// The index folder. None: the helper's own default (%LOCALAPPDATA%\DigUp\index on Windows,
     /// ~/.local/share/digup/index on Linux).
     pub index: Option<PathBuf>,
-    /// DOWNSTREAM-FORK: the index folder from the DIGUP_INDEX environment variable, used when `--index` is not given. Kept apart
-    /// from `index` because that one makes this a dev run (no open-at-login entry); a default from the environment must not.
-    pub index_env: Option<PathBuf>,
+    /// DOWNSTREAM-FORK: the index folder used when `--index` is not given: the one this build was made with
+    /// (DIGUP_BUILD_INDEX at build time, see scripts/build-installer.bat), else the DIGUP_INDEX environment variable. Kept apart
+    /// from `index` because that one makes this a dev run (no open-at-login entry); a default must not.
+    pub index_default: Option<PathBuf>,
     /// Where the model files are (DIGUP_MODELS for the helpers); None: the helper looks where it always does.
-    /// DOWNSTREAM-FORK: `--models`, else the DIGUP_MODELS environment variable.
+    /// DOWNSTREAM-FORK: `--models`, else the folder this build was made with (DIGUP_BUILD_MODELS), else DIGUP_MODELS.
     pub models: Option<PathBuf>,
     /// The folders to search and keep indexed, instead of the settings' (dev runs; setup is then skipped).
     pub roots: Vec<PathBuf>,
@@ -63,8 +64,8 @@ impl Options {
         let mut options = Options {
             helper: default_helper(),
             index: None,
-            index_env: env_folder("DIGUP_INDEX"),
-            models: env_folder("DIGUP_MODELS"),
+            index_default: build_folder(option_env!("DIGUP_BUILD_INDEX")).or_else(|| env_folder("DIGUP_INDEX")),
+            models: build_folder(option_env!("DIGUP_BUILD_MODELS")).or_else(|| env_folder("DIGUP_MODELS")),
             roots: Vec::new(),
             code_roots: Vec::new(),
             hotkey: None,
@@ -120,9 +121,9 @@ impl Options {
 }
 
 impl Options {
-    /// DOWNSTREAM-FORK: the index folder to pass the helpers: `--index`, else DIGUP_INDEX, else None (the helper's default).
+    /// DOWNSTREAM-FORK: the index folder to pass the helpers: `--index`, else the build's or DIGUP_INDEX, else None (the helper's default).
     pub fn index_choice(&self) -> Option<PathBuf> {
-        self.index.clone().or_else(|| self.index_env.clone())
+        self.index.clone().or_else(|| self.index_default.clone())
     }
 
     /// The index folder the helpers use: the one chosen (`index_choice`), else the helper's default (which the watcher must
@@ -138,6 +139,12 @@ impl Options {
             .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")));
         data.map(|data| data.join("digup").join("index"))
     }
+}
+
+/// DOWNSTREAM-FORK: a folder fixed when the program was built (the installer's profile); unset or empty is None. It comes before
+/// the environment variable so that a "local" build keeps its own index even when DIGUP_INDEX names the production one.
+fn build_folder(value: Option<&'static str>) -> Option<PathBuf> {
+    value.filter(|value| !value.is_empty()).map(PathBuf::from)
 }
 
 /// DOWNSTREAM-FORK: a folder from an environment variable; unset or empty is None.

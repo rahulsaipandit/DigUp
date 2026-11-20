@@ -26,3 +26,9 @@ shell/src-tauri/gen/
 # What scripts/package-*.sh gather for the packages
 shell/src-tauri/helper/
 shell/src-tauri/THIRD-PARTY-NOTICES.txt
+
+# Real photos used to try face detection (never commit a real person's photos)
+scripts/test-photos/
+
+# Local scratch: installers and other build output kept out of the temp folder (nothing here is committed)
+scripts/scratch/

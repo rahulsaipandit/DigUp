@@ -47,14 +47,36 @@ if [[ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
   fi
   signing=',"createUpdaterArtifacts":true'
 fi
+# DOWNSTREAM-FORK (2026-11-20): DIGUP_PROFILE selects what is built (scripts/build-installer.bat sets it).
+#   production (the default): the app as upstream ships it.
+#   local: "DigUp Local", a second app next to the real one (own install folder, settings and uninstall entry), packed with zlib
+#          (a bigger installer, but makensis' LZMA on one core is the slowest step). build-installer.bat also gives it a lighter
+#          cargo profile and its own target folder through CARGO_PROFILE_RELEASE_* and CARGO_TARGET_DIR.
+# DIGUP_BUILD_INDEX and DIGUP_BUILD_MODELS, when set, are compiled into the shell as its default folders (options.rs).
+identity=
+bundle_extra=
+case "${DIGUP_PROFILE:-production}" in
+  production) ;;
+  local)
+    identity=',"productName":"DigUp Local","identifier":"com.abdurrahim.DigUp.local"'
+    bundle_extra=',"windows":{"nsis":{"compression":"zlib"}}'
+    ;;
+  *) echo "DIGUP_PROFILE must be local or production, not ${DIGUP_PROFILE}" >&2; exit 1 ;;
+esac
+# Where cargo puts the bundle: its own target folder when CARGO_TARGET_DIR is set (an absolute path).
+if [[ -n "${CARGO_TARGET_DIR:-}" ]]; then
+  bundle_dir="$(cygpath -u "$CARGO_TARGET_DIR")/release/bundle/nsis"
+else
+  bundle_dir=shell/src-tauri/target/release/bundle/nsis
+fi
 # The license of everything the installer carries, installed beside the app. (python3 can be the Store's stub.)
 python=python3
 python3 -c '' 2> /dev/null || python=python
 "$python" scripts/notices.py windows shell/src-tauri/THIRD-PARTY-NOTICES.txt
 # Installers of an earlier build (another version) would be taken for this one's.
-rm -rf shell/src-tauri/target/release/bundle/nsis
+rm -rf "$bundle_dir"
 # The helper folder goes in as the installer's resources here only: Tauri checks resources on every build.
 resources='{"helper/":"helper/","THIRD-PARTY-NOTICES.txt":"THIRD-PARTY-NOTICES.txt"}'
 (cd shell/src-tauri && npx --yes "@tauri-apps/cli@$TAURI_CLI" build --bundles nsis \
-  --config "{\"bundle\":{\"resources\":$resources$signing}}")
-ls -la shell/src-tauri/target/release/bundle/nsis/
+  --config "{\"bundle\":{\"resources\":$resources$signing$bundle_extra}$identity}")
+ls -la "$bundle_dir/"
